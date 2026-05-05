@@ -66,6 +66,7 @@ Vendor overrides:
 - Generated-key collisions fail fast (for example `name`, `description`).
 - Skill installs fail fast when `vendor.<target>.config` and `vendor.<target>.frontmatter` share keys.
 - Agents fail fast when `vendor.codex.emit = "instruction-only"` is combined with `vendor.codex.config`.
+- Codex TOML pass-through values must be strings, numbers, booleans, or arrays; nested objects are rejected.
 
 ### Definition File Examples
 
@@ -135,8 +136,11 @@ headers = { Authorization = "Bearer ${MCP_TOKEN}" }
 - Set one transport mode only.
 - `startup_timeout_ms` is supported in source and is emitted for Codex as `startup_timeout_sec`.
 - Use `vendor.<target>.config` for target-specific MCP fields.
+- Avoid nested object values in `vendor.codex.config`; Codex TOML output supports scalar and array pass-through values.
 
 ## Command Reference
+
+Use `npx github:raniejade/airc ...` to run from GitHub, or replace it with `airc ...` when the binary is installed locally or globally.
 
 ### `init`
 
