@@ -1,0 +1,92 @@
+#!/usr/bin/env node
+/* global console, process */
+import { mkdtemp, access, mkdir, rm, stat } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { spawn } from 'node:child_process';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const repoRoot = path.resolve(__dirname, '..');
+const cliPath = path.join(repoRoot, 'dist', 'cli.js');
+const keepTemp = process.env.AIRC_HARNESS_KEEP === '1';
+
+async function runCli(cwd, args) {
+  return await new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [cliPath, ...args], {
+      cwd,
+      stdio: ['ignore', 'pipe', 'pipe']
+    });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (chunk) => { stdout += chunk; });
+    child.stderr.on('data', (chunk) => { stderr += chunk; });
+    child.on('error', reject);
+    child.on('close', (code) => {
+      if (code === 0) {
+        resolve({ stdout, stderr });
+        return;
+      }
+      reject(new Error(`airc ${args.join(' ')} failed with code ${code}\nstdout:\n${stdout}\nstderr:\n${stderr}`));
+    });
+  });
+}
+
+async function expectExists(filePath) {
+  await stat(filePath);
+}
+
+async function expectMissing(filePath) {
+  try {
+    await stat(filePath);
+    throw new Error(`expected missing path: ${filePath}`);
+  } catch (error) {
+    if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') return;
+    throw error;
+  }
+}
+
+async function main() {
+  try {
+    await access(cliPath);
+  } catch {
+    console.error(`harness smoke failed: missing built CLI at ${cliPath}`);
+    console.error('run `npm run build` first or use `npm run test:harness`');
+    process.exit(1);
+  }
+
+  const tmpRoot = await mkdtemp(path.join(os.tmpdir(), 'airc-harness-'));
+  const sampleRepo = path.join(tmpRoot, 'sample-repo');
+
+  try {
+    await mkdir(sampleRepo, { recursive: true });
+
+    await runCli(sampleRepo, ['init', '--scope', 'project']);
+    await runCli(sampleRepo, ['doctor', '--scope', 'project', '--kind', 'mcp']);
+    await runCli(sampleRepo, ['install', '--scope', 'project', '--target', 'codex']);
+    await runCli(sampleRepo, ['install', '--scope', 'project', '--target', 'claude,opencode', '--dry-run']);
+
+    await expectExists(path.join(sampleRepo, '.airc', 'agents', 'reviewer.toml'));
+    await expectExists(path.join(sampleRepo, '.airc', 'skills', 'project-gates', 'SKILL.md'));
+    await expectExists(path.join(sampleRepo, '.airc', 'mcps', 'project-rules.toml'));
+    await expectExists(path.join(sampleRepo, '.airc', '.install-manifest.json'));
+
+    await expectExists(path.join(sampleRepo, '.codex', 'agents', 'reviewer.toml'));
+    await expectExists(path.join(sampleRepo, '.agents', 'skills', 'project-gates', 'SKILL.md'));
+    await expectExists(path.join(sampleRepo, '.codex', 'config.toml'));
+
+    await expectMissing(path.join(sampleRepo, '.claude'));
+    await expectMissing(path.join(sampleRepo, '.opencode'));
+
+    console.log('harness smoke: ok');
+  } catch (error) {
+    console.error('harness smoke: failed');
+    console.error(error instanceof Error ? error.message : String(error));
+    if (keepTemp) console.error(`kept temp dir: ${tmpRoot}`);
+    process.exitCode = 1;
+  } finally {
+    if (!keepTemp) await rm(tmpRoot, { recursive: true, force: true });
+  }
+}
+
+await main();

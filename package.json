@@ -12,6 +12,7 @@
     "build": "tsup src/cli.ts --format esm --dts --clean --out-dir dist",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "test:harness": "npm run build && node scripts/harness-smoke.mjs",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix"
   },
