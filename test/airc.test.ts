@@ -2,6 +2,7 @@ import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import os from 'node:os';
 import path from 'node:path';
 
+import { parse as parseToml } from 'smol-toml';
 import { describe, expect, it, afterEach } from 'vitest';
 
 import { adapterFor, TARGET_ADAPTERS } from '../src/adapters/target-adapters.js';
@@ -226,15 +227,45 @@ describe('install + doctor', () => {
 
     const opencode = JSON.parse(await readFile(path.join(root, '.opencode/opencode.json'), 'utf8')) as { mcp: Record<string, { type: string; enabled: boolean; command?: string[]; url?: string }> };
     expect(Object.keys(opencode.mcp)).toEqual(['a-remote', 'project-rules', 'z-remote']);
-    expect(opencode.mcp['project-rules'].type).toBe('local');
-    expect(opencode.mcp['project-rules'].enabled).toBe(true);
-    expect(opencode.mcp['project-rules'].command?.[0]).toBe('node');
-    expect(opencode.mcp['project-rules'].command?.at(-1)).toBe('${PROJECT_RULES_TOKEN}');
+  });
+
+  it('vendor compatibility schema: OpenCode MCP emits local/remote typed entries and rejects legacy command object shape', async () => {
+    const root = await makeTmp();
+    await seed(root);
+    await writeFile(path.join(root, '.airc/mcps/a-remote.toml'), 'id = "a-remote"\ntype = "sse"\nurl = "https://example.test/a"\n', 'utf8');
+
+    await install({ scope: 'project', cwd: root, targets: ['opencode'], kinds: ['mcp'] });
+
+    const opencode = JSON.parse(await readFile(path.join(root, '.opencode/opencode.json'), 'utf8')) as {
+      mcp: Record<string, { type: string; enabled: boolean; command?: unknown; url?: unknown }>;
+    };
+
+    expect(opencode.mcp['project-rules']).toEqual({
+      type: 'local',
+      enabled: true,
+      command: ['node', './mcp.js', '${PROJECT_RULES_TOKEN}']
+    });
     expect(opencode.mcp['a-remote']).toEqual({
       type: 'remote',
       enabled: true,
       url: 'https://example.test/a'
     });
+
+    const local = opencode.mcp['project-rules'] as { command?: unknown; args?: unknown };
+    expect(Array.isArray(local.command)).toBe(true);
+    expect(local).not.toHaveProperty('args');
+    expect(local.command).not.toEqual({ command: 'node', args: ['./mcp.js', '${PROJECT_RULES_TOKEN}'] });
+  });
+
+  it('vendor compatibility schema: Codex MCP config emits startup_timeout_sec and never startup_timeout', async () => {
+    const root = await makeTmp();
+    await seed(root);
+
+    await install({ scope: 'project', cwd: root, targets: ['codex'], kinds: ['mcp'] });
+    const codexToml = await readFile(path.join(root, '.codex/config.toml'), 'utf8');
+
+    expect(codexToml).toContain('startup_timeout_sec = 2');
+    expect(codexToml).not.toContain('startup_timeout = ');
   });
 
   it('clean keeps shared MCP config path when still used by current MCP set', async () => {
@@ -251,7 +282,7 @@ describe('install + doctor', () => {
     expect(Object.keys(kept.mcpServers)).toEqual(['project-rules']);
   });
 
-  it('escapes codex TOML instructions when agent instructions come from relative file', async () => {
+  it('vendor compatibility schema: Codex agent TOML emits name/description/developer_instructions and rejects id/instructions keys', async () => {
     const root = await makeTmp();
     await mkdir(path.join(root, '.airc/agents'), { recursive: true });
     await writeFile(path.join(root, '.airc/agents/reviewer.toml'), 'id = "reviewer"\ninstructions = "./reviewer.md"\n', 'utf8');
@@ -259,11 +290,14 @@ describe('install + doctor', () => {
 
     await install({ scope: 'project', cwd: root, targets: ['codex'], kinds: ['agent'] });
     const toml = await readFile(path.join(root, '.codex/agents/reviewer.toml'), 'utf8');
+    const parsed = parseToml(toml.replace(/^<!-- managed-by-airc -->\n/, '')) as Record<string, unknown>;
+
     expect(toml).toContain('name = "reviewer"');
     expect(toml).toContain('description = "reviewer"');
     expect(toml).toContain('developer_instructions = "line \\"one\\"\\nline two\\n"');
-    expect(toml).not.toMatch(/^id\s*=/m);
-    expect(toml).not.toMatch(/^instructions\s*=/m);
+    expect(Object.keys(parsed).sort()).toEqual(['description', 'developer_instructions', 'name']);
+    expect(parsed).not.toHaveProperty('id');
+    expect(parsed).not.toHaveProperty('instructions');
   });
 
   it('persists skill assets in manifest and keeps reinstall idempotent', async () => {
