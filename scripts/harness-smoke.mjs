@@ -81,6 +81,20 @@ async function main() {
       throw new Error('OpenCode MCP entry for project-rules has unexpected command shape');
     }
 
+    const codexAgentToml = await readFile(path.join(sampleRepo, '.codex', 'agents', 'reviewer.toml'), 'utf8');
+    if (!/^name = "reviewer"$/m.test(codexAgentToml)) {
+      throw new Error('Codex reviewer agent TOML missing name field');
+    }
+    if (!/^description = /m.test(codexAgentToml)) {
+      throw new Error('Codex reviewer agent TOML missing description field');
+    }
+    if (!/^developer_instructions = /m.test(codexAgentToml)) {
+      throw new Error('Codex reviewer agent TOML missing developer_instructions field');
+    }
+    if (/^id = /m.test(codexAgentToml) || /^instructions = /m.test(codexAgentToml)) {
+      throw new Error('Codex reviewer agent TOML still uses legacy id/instructions fields');
+    }
+
     console.log('harness smoke: ok');
   } catch (error) {
     console.error('harness smoke: failed');

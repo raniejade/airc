@@ -221,6 +221,8 @@ describe('install + doctor', () => {
     const codexToml = await readFile(path.join(root, '.codex/config.toml'), 'utf8');
     expect(codexToml.indexOf('[mcp_servers.a-remote]')).toBeLessThan(codexToml.indexOf('[mcp_servers.project-rules]'));
     expect(codexToml.indexOf('[mcp_servers.project-rules]')).toBeLessThan(codexToml.indexOf('[mcp_servers.z-remote]'));
+    expect(codexToml).toContain('startup_timeout_sec = 2');
+    expect(codexToml).not.toContain('startup_timeout = ');
 
     const opencode = JSON.parse(await readFile(path.join(root, '.opencode/opencode.json'), 'utf8')) as { mcp: Record<string, { type: string; enabled: boolean; command?: string[]; url?: string }> };
     expect(Object.keys(opencode.mcp)).toEqual(['a-remote', 'project-rules', 'z-remote']);
@@ -257,7 +259,11 @@ describe('install + doctor', () => {
 
     await install({ scope: 'project', cwd: root, targets: ['codex'], kinds: ['agent'] });
     const toml = await readFile(path.join(root, '.codex/agents/reviewer.toml'), 'utf8');
-    expect(toml).toContain('instructions = "line \\"one\\"\\nline two\\n"');
+    expect(toml).toContain('name = "reviewer"');
+    expect(toml).toContain('description = "reviewer"');
+    expect(toml).toContain('developer_instructions = "line \\"one\\"\\nline two\\n"');
+    expect(toml).not.toMatch(/^id\s*=/m);
+    expect(toml).not.toMatch(/^instructions\s*=/m);
   });
 
   it('persists skill assets in manifest and keeps reinstall idempotent', async () => {

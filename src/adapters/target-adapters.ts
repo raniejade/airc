@@ -81,7 +81,7 @@ function codexAdapter(): TargetAdapter {
           const content = textManagedPayload(frontmatter, agent.instructions);
           outputs.push({ target: 'codex', kind: 'agent', id: agent.id, source: agent.source.relPath, relPath: `.codex/agents/${agent.id}.md`, content, hash: sha256(content), isJson: false });
         } else {
-          const content = `${AIRC_MARKER}\nid = ${JSON.stringify(agent.id)}\ninstructions = ${JSON.stringify(agent.instructions)}\n`;
+          const content = `${AIRC_MARKER}\nname = ${JSON.stringify(agent.id)}\ndescription = ${JSON.stringify(agent.description ?? agent.name ?? agent.id)}\ndeveloper_instructions = ${JSON.stringify(agent.instructions)}\n`;
           outputs.push({ target: 'codex', kind: 'agent', id: agent.id, source: agent.source.relPath, relPath: `.codex/agents/${agent.id}.toml`, content, hash: sha256(content), isJson: false });
         }
       }
@@ -105,7 +105,7 @@ function codexAdapter(): TargetAdapter {
             lines.push(`type = ${JSON.stringify(mcp.transport.type)}`);
             lines.push(`url = ${JSON.stringify(mcp.transport.url)}`);
           }
-          if (mcp.startupTimeoutMs) lines.push(`startup_timeout = ${Math.ceil(mcp.startupTimeoutMs / 1000)}`);
+          if (mcp.startupTimeoutMs) lines.push(`startup_timeout_sec = ${Math.ceil(mcp.startupTimeoutMs / 1000)}`);
           lines.push('');
         }
         const content = `${lines.join('\n').trimEnd()}\n`;
