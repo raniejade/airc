@@ -30,7 +30,8 @@ const mcpSchema = z.object({
   args: z.array(z.string()).optional(),
   type: z.string().optional(),
   url: z.string().optional(),
-  startup_timeout_ms: z.number().int().positive().optional()
+  startup_timeout_ms: z.number().int().positive().optional(),
+  vendor: z.record(z.unknown()).optional()
 }).superRefine((v, ctx) => {
   const hasLocal = !!v.command;
   const hasRemote = !!v.type && !!v.url;
