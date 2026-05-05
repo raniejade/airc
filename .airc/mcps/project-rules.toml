@@ -1,3 +1,0 @@
-id = "project-rules"
-command = "node"
-args = ["./tools/project-rules-mcp.js", "${PROJECT_RULES_TOKEN}"]
