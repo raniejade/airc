@@ -41,6 +41,12 @@ Responsibilities:
 - Resolve instruction file indirection for agents
 - Resolve skill asset hashes
 - Normalize MCP transport into `local` vs `remote`
+- Normalize vendor pass-through maps:
+- `vendor.<target>.config` for agent/skill/mcp target payload overlays
+- `vendor.<target>.frontmatter` for skill markdown frontmatter overlays
+- skill frontmatter merge order is `base generated/frontmatter -> vendor.<target>.config -> vendor.<target>.frontmatter`
+- skill overlay maps cannot collide with generated keys (`name`, `description`) and cannot duplicate keys across `config` + `frontmatter`
+- Enforce collision rules for generated keys and incompatibilities (for example instruction-only + codex config)
 - Collect config warnings as runtime signals
 
 Non-responsibilities:
@@ -64,6 +70,7 @@ Responsibilities:
 
 - Define target-relative output paths
 - Render target-specific content formats
+- Apply vendor pass-through overlays verbatim
 - Preserve source metadata + deterministic content hash
 - Mark JSON outputs when overwrite policy should be stricter
 

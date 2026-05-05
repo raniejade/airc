@@ -25,6 +25,24 @@ export type TargetAdapter = {
   plan: (config: RuntimeConfig, scope: Scope) => AdapterOutput[];
 };
 
+function mergeGeneratedWithVendor(generated: Record<string, unknown>, vendor: Record<string, unknown> | undefined, context: string): Record<string, unknown> {
+  if (!vendor) return generated;
+  for (const key of Object.keys(vendor)) {
+    if (Object.prototype.hasOwnProperty.call(generated, key)) {
+      throw new Error(`${context} collides with generated key: ${key}`);
+    }
+  }
+  return { ...generated, ...vendor };
+}
+
+function toTomlValue(value: unknown): string {
+  if (typeof value === 'string') return JSON.stringify(value);
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  if (Array.isArray(value)) return `[${value.map((entry) => toTomlValue(entry)).join(', ')}]`;
+  if (value && typeof value === 'object') throw new Error('nested object values are not supported in vendor config pass-through');
+  throw new Error(`unsupported vendor config value type: ${typeof value}`);
+}
+
 export function vendorManifestRelPath(target: Target, kind: Kind): string {
   if (target === 'claude') return '.claude/.airc-install-manifest.json';
   if (target === 'opencode') return '.opencode/.airc-install-manifest.json';
@@ -45,7 +63,11 @@ function claudeAdapter(): TargetAdapter {
       const outputs: AdapterOutput[] = [];
 
       for (const agent of config.agents) {
-        const frontmatter = { name: agent.id, description: agent.description ?? agent.name ?? agent.id };
+        const frontmatter = mergeGeneratedWithVendor(
+          { name: agent.id, description: agent.description ?? agent.name ?? agent.id },
+          agent.vendor.claudeConfig,
+          `agent ${agent.id} vendor.claude.config`
+        );
         const content = textManagedPayload(frontmatter, agent.instructions);
         const relPath = `.claude/agents/${agent.id}.md`;
         outputs.push({ target: 'claude', kind: 'agent', id: agent.id, source: agent.source.relPath, relPath, manifestRelPath: vendorManifestRelPath('claude', 'agent'), inventory: [{ version: 1, relPath, format: 'markdown', selector: '$' }], content, hash: sha256(content), isJson: false });
@@ -66,9 +88,10 @@ function claudeAdapter(): TargetAdapter {
         const relPath = scope === 'project' ? '.mcp.json' : '.claude.json';
         const mcpServers = Object.fromEntries([...config.mcps].sort((a, b) => a.id.localeCompare(b.id)).map((mcp) => [
           mcp.id,
-          mcp.transport.kind === 'local'
+          mergeGeneratedWithVendor(mcp.transport.kind === 'local'
             ? { command: mcp.transport.command, args: mcp.transport.args }
-            : { type: mcp.transport.type, url: mcp.transport.url }
+            : { type: mcp.transport.type, url: mcp.transport.url }, mcp.vendorConfig?.claude, `mcp ${mcp.id} vendor.claude.config`
+          )
         ]));
         const content = `${JSON.stringify({ mcpServers }, null, 2)}\n`;
         for (const mcp of config.mcps) {
@@ -88,20 +111,32 @@ function codexAdapter(): TargetAdapter {
       const outputs: AdapterOutput[] = [];
 
       for (const agent of config.agents) {
-        const frontmatter = { name: agent.id, description: agent.description ?? agent.name ?? agent.id };
+        const frontmatter = mergeGeneratedWithVendor(
+          { name: agent.id, description: agent.description ?? agent.name ?? agent.id },
+          agent.vendor.codexConfig,
+          `agent ${agent.id} vendor.codex.config`
+        );
         if (agent.vendor.codexEmitInstructionOnly) {
           const content = textManagedPayload(frontmatter, agent.instructions);
           const relPath = `.codex/agents/${agent.id}.md`;
           outputs.push({ target: 'codex', kind: 'agent', id: agent.id, source: agent.source.relPath, relPath, manifestRelPath: vendorManifestRelPath('codex', 'agent'), inventory: [{ version: 1, relPath, format: 'markdown', selector: '$' }], content, hash: sha256(content), isJson: false });
         } else {
-          const content = `${AIRC_MARKER}\nname = ${JSON.stringify(agent.id)}\ndescription = ${JSON.stringify(agent.description ?? agent.name ?? agent.id)}\ndeveloper_instructions = ${JSON.stringify(agent.instructions)}\n`;
+          const generated: Record<string, unknown> = {
+            name: agent.id,
+            description: agent.description ?? agent.name ?? agent.id,
+            developer_instructions: agent.instructions
+          };
+          const merged = mergeGeneratedWithVendor(generated, agent.vendor.codexConfig, `agent ${agent.id} vendor.codex.config`);
+          const lines = [AIRC_MARKER];
+          for (const [key, value] of Object.entries(merged)) lines.push(`${key} = ${toTomlValue(value)}`);
+          const content = `${lines.join('\n')}\n`;
           const relPath = `.codex/agents/${agent.id}.toml`;
           outputs.push({ target: 'codex', kind: 'agent', id: agent.id, source: agent.source.relPath, relPath, manifestRelPath: vendorManifestRelPath('codex', 'agent'), inventory: [{ version: 1, relPath, format: 'toml', selector: '$' }], content, hash: sha256(content), isJson: false });
         }
       }
 
       for (const skill of config.skills) {
-        const content = textManagedPayload(skill.frontmatter, skill.body);
+        const content = textManagedPayload(skill.codexFrontmatter ?? skill.frontmatter, skill.body);
         const relPath = `.agents/skills/${skill.id}/SKILL.md`;
         outputs.push({ target: 'codex', kind: 'skill', id: skill.id, source: skill.source.relPath, relPath, manifestRelPath: vendorManifestRelPath('codex', 'skill'), inventory: [{ version: 1, relPath, format: 'markdown', selector: '$' }], content, hash: sha256(content), isJson: false });
         for (const asset of skill.assets) {
@@ -114,14 +149,12 @@ function codexAdapter(): TargetAdapter {
         const lines = [AIRC_MARKER];
         for (const mcp of [...config.mcps].sort((a, b) => a.id.localeCompare(b.id))) {
           lines.push(`[mcp_servers.${mcp.id}]`);
-          if (mcp.transport.kind === 'local') {
-            lines.push(`command = ${JSON.stringify(mcp.transport.command)}`);
-            lines.push(`args = [${mcp.transport.args.map((v) => JSON.stringify(v)).join(', ')}]`);
-          } else {
-            lines.push(`type = ${JSON.stringify(mcp.transport.type)}`);
-            lines.push(`url = ${JSON.stringify(mcp.transport.url)}`);
-          }
-          if (mcp.startupTimeoutMs) lines.push(`startup_timeout_sec = ${Math.ceil(mcp.startupTimeoutMs / 1000)}`);
+          const generated: Record<string, unknown> = mcp.transport.kind === 'local'
+            ? { command: mcp.transport.command, args: mcp.transport.args }
+            : { type: mcp.transport.type, url: mcp.transport.url };
+          if (mcp.startupTimeoutMs) generated.startup_timeout_sec = Math.ceil(mcp.startupTimeoutMs / 1000);
+          const merged = mergeGeneratedWithVendor(generated, mcp.vendorConfig?.codex, `mcp ${mcp.id} vendor.codex.config`);
+          for (const [key, value] of Object.entries(merged)) lines.push(`${key} = ${toTomlValue(value)}`);
           lines.push('');
         }
         const content = `${lines.join('\n').trimEnd()}\n`;
@@ -143,14 +176,18 @@ function opencodeAdapter(): TargetAdapter {
       const outputs: AdapterOutput[] = [];
 
       for (const agent of config.agents) {
-        const frontmatter = { name: agent.id, description: agent.description ?? agent.name ?? agent.id };
+        const frontmatter = mergeGeneratedWithVendor(
+          { name: agent.id, description: agent.description ?? agent.name ?? agent.id },
+          agent.vendor.opencodeConfig,
+          `agent ${agent.id} vendor.opencode.config`
+        );
         const content = textManagedPayload(frontmatter, agent.instructions);
         const relPath = `.opencode/agents/${agent.id}.md`;
         outputs.push({ target: 'opencode', kind: 'agent', id: agent.id, source: agent.source.relPath, relPath, manifestRelPath: vendorManifestRelPath('opencode', 'agent'), inventory: [{ version: 1, relPath, format: 'markdown', selector: '$' }], content, hash: sha256(content), isJson: false });
       }
 
       for (const skill of config.skills) {
-        const content = textManagedPayload(skill.frontmatter, skill.body);
+        const content = textManagedPayload(skill.opencodeFrontmatter ?? skill.frontmatter, skill.body);
         const relPath = `.opencode/skills/${skill.id}/SKILL.md`;
         outputs.push({ target: 'opencode', kind: 'skill', id: skill.id, source: skill.source.relPath, relPath, manifestRelPath: vendorManifestRelPath('opencode', 'skill'), inventory: [{ version: 1, relPath, format: 'markdown', selector: '$' }], content, hash: sha256(content), isJson: false });
         for (const asset of skill.assets) {
@@ -162,9 +199,10 @@ function opencodeAdapter(): TargetAdapter {
       if (config.mcps.length > 0) {
         const mcp = Object.fromEntries([...config.mcps].sort((a, b) => a.id.localeCompare(b.id)).map((server) => [
           server.id,
-          server.transport.kind === 'local'
+          mergeGeneratedWithVendor(server.transport.kind === 'local'
             ? { type: 'local', enabled: true, command: [server.transport.command, ...server.transport.args] }
-            : { type: 'remote', enabled: true, url: server.transport.url }
+            : { type: 'remote', enabled: true, url: server.transport.url }, server.vendorConfig?.opencode, `mcp ${server.id} vendor.opencode.config`
+          )
         ]));
         const content = `${JSON.stringify({ mcp }, null, 2)}\n`;
         for (const server of config.mcps) {

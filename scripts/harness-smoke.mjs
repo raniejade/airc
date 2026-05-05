@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /* global console, process */
-import { mkdtemp, access, mkdir, readFile, rm, stat } from 'node:fs/promises';
+import { mkdtemp, access, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -56,6 +56,11 @@ async function main() {
     await mkdir(sampleRepo, { recursive: true });
 
     await runCli(sampleRepo, ['init', '--scope', 'project']);
+    await writeFile(
+      path.join(sampleRepo, '.airc', 'agents', 'reviewer.toml'),
+      'id = "reviewer"\nname = "Reviewer"\ndescription = "Checks project rules and required gates"\ninstructions = "./reviewer.instructions.md"\n[vendor.codex.config]\nmodel = "gpt-5"\nmodel_reasoning_effort = "high"\nsandbox_mode = "workspace-write"\n',
+      'utf8'
+    );
     await runCli(sampleRepo, ['doctor', '--scope', 'project', '--kind', 'mcp']);
     await runCli(sampleRepo, ['install', '--scope', 'project', '--target', 'codex']);
     await runCli(sampleRepo, ['install', '--scope', 'project', '--target', 'claude,opencode']);
@@ -93,6 +98,15 @@ async function main() {
     }
     if (!/^developer_instructions = /m.test(codexAgentToml)) {
       throw new Error('Codex reviewer agent TOML missing developer_instructions field');
+    }
+    if (!/^model = "gpt-5"$/m.test(codexAgentToml)) {
+      throw new Error('Codex reviewer agent TOML missing vendor.codex.config model field');
+    }
+    if (!/^model_reasoning_effort = "high"$/m.test(codexAgentToml)) {
+      throw new Error('Codex reviewer agent TOML missing vendor.codex.config model_reasoning_effort field');
+    }
+    if (!/^sandbox_mode = "workspace-write"$/m.test(codexAgentToml)) {
+      throw new Error('Codex reviewer agent TOML missing vendor.codex.config sandbox_mode field');
     }
     if (/^id = /m.test(codexAgentToml) || /^instructions = /m.test(codexAgentToml)) {
       throw new Error('Codex reviewer agent TOML still uses legacy id/instructions fields');
