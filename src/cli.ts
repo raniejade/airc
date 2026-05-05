@@ -1,0 +1,92 @@
+#!/usr/bin/env node
+import { Command, InvalidArgumentError } from 'commander';
+import { doctor, initScope, install } from './core/install.js';
+import type { Kind, Scope, Target } from './core/types.js';
+import { splitCsv } from './core/util.js';
+
+const SCOPE_VALUES = ['project', 'user'] as const;
+const TARGET_VALUES = ['claude', 'codex', 'opencode'] as const;
+const KIND_VALUES = ['agent', 'skill', 'mcp'] as const;
+
+function parseScope(value: string): Scope {
+  if ((SCOPE_VALUES as readonly string[]).includes(value)) return value as Scope;
+  throw new InvalidArgumentError(`invalid scope: ${value}`);
+}
+
+function normalizeTargets(value: string | undefined): Target[] {
+  const targets = splitCsv<Target>(value, TARGET_VALUES);
+  for (const target of targets) {
+    if (!TARGET_VALUES.includes(target)) throw new InvalidArgumentError(`invalid target: ${target}`);
+  }
+  return targets;
+}
+
+function normalizeKinds(value: string | undefined): Kind[] {
+  const kinds = splitCsv<Kind>(value, KIND_VALUES);
+  for (const kind of kinds) {
+    if (!KIND_VALUES.includes(kind)) throw new InvalidArgumentError(`invalid kind: ${kind}`);
+  }
+  return kinds;
+}
+
+const program = new Command();
+program
+  .name('airc')
+  .description('Install AIRC project definitions into Claude/Codex/OpenCode config surfaces')
+  .showHelpAfterError()
+  .configureOutput({ outputError: (str, write) => write(str) })
+  .exitOverride((error) => {
+    if (error.code === 'commander.helpDisplayed') process.exit(0);
+    if (error.code?.startsWith('commander.')) process.exit(2);
+    process.exit(1);
+  });
+
+program.command('init')
+  .description('Initialize .airc source tree with starter reviewer + project-gates + project-rules definitions')
+  .option('--scope <scope>', 'project|user scope', parseScope, 'project')
+  .option('--empty', 'create folders only without starter examples')
+  .action(async (opts: { scope: Scope; empty?: boolean }) => {
+    await initScope(opts.scope, process.cwd(), !!opts.empty);
+  });
+
+program.command('install')
+  .description('Install selected kinds/targets from .airc definitions')
+  .option('--scope <scope>', 'project|user scope', parseScope, 'project')
+  .option('--target <targets>', 'comma-separated: claude,codex,opencode')
+  .option('--kind <kinds>', 'comma-separated: agent,skill,mcp')
+  .option('--dry-run', 'print planned changes only')
+  .option('--clean', 'delete stale files tracked by manifest for selected kind/target')
+  .option('--force', 'override unmanaged files')
+  .action(async (opts: { scope: Scope; target?: string; kind?: string; dryRun?: boolean; clean?: boolean; force?: boolean }) => {
+    const result = await install({
+      scope: opts.scope,
+      targets: normalizeTargets(opts.target),
+      kinds: normalizeKinds(opts.kind),
+      dryRun: !!opts.dryRun,
+      clean: !!opts.clean,
+      force: !!opts.force,
+      cwd: process.cwd()
+    });
+    console.log(`create:\n${result.create.join('\n') || '-'}`);
+    console.log(`update:\n${result.update.join('\n') || '-'}`);
+    console.log(`delete:\n${result.del.join('\n') || '-'}`);
+  });
+
+program.command('doctor')
+  .description('Validate definitions and print warnings')
+  .option('--scope <scope>', 'project|user scope', parseScope, 'project')
+  .option('--target <targets>', 'comma-separated: claude,codex,opencode')
+  .option('--kind <kinds>', 'comma-separated: agent,skill,mcp')
+  .action(async (opts: { scope: Scope; target?: string; kind?: string }) => {
+    const warnings = await doctor(opts.scope, process.cwd(), normalizeTargets(opts.target), normalizeKinds(opts.kind));
+    if (warnings.length === 0) {
+      console.log('ok');
+      return;
+    }
+    for (const warning of warnings) console.log(warning);
+  });
+
+program.parseAsync(process.argv).catch((error) => {
+  console.error(String(error?.message || error));
+  process.exit(1);
+});
