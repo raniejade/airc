@@ -561,7 +561,7 @@ describe('install + doctor', () => {
 
     await install({ cwd: root, targets: ['claude', 'codex', 'opencode'], kinds: ['mcp', 'rule'] });
 
-    const codexRules = await readFile(path.join(root, '.codex/rules/project/wrappers.toml.rules'), 'utf8');
+    const codexRules = await readFile(path.join(root, '.codex/rules/wrappers.toml.rules'), 'utf8');
     expect(codexRules.startsWith(`${MANAGED_TOML_WARNING}\n`)).toBe(true);
     expect(codexRules).toContain('prefix_rule([');
     expect(codexRules).toContain('["gh",["pr","issue"],"merge"]');
@@ -1160,11 +1160,49 @@ describe('install + doctor', () => {
     }
   });
 
-  it('uses pack-aware codex rule paths', async () => {
+  it('uses flat codex rule paths', async () => {
     const root = await makeTmp();
     await seed(root);
     await install({ cwd: root, targets: ['codex'], kinds: ['rule'] });
-    await expect(stat(path.join(root, '.codex/rules/project/wrappers.toml.rules'))).resolves.toBeTruthy();
+    await expect(stat(path.join(root, '.codex/rules/wrappers.toml.rules'))).resolves.toBeTruthy();
+  });
+
+  it('fails codex install on shared-pack flat rule path collision before writing output', async () => {
+    if (spawnSync('git', ['--version']).status !== 0) return;
+    const root = await makeTmp();
+    const cacheRoot = path.join(root, '.cache');
+    process.env.RAC_CACHE_DIR = cacheRoot;
+    try {
+      const remote = path.join(root, 'remote');
+      await mkdir(path.join(remote, '.rac/rules'), { recursive: true });
+      await writeFile(path.join(remote, '.rac/config.toml'), '', 'utf8');
+      await writeFile(
+        path.join(remote, '.rac/rules/wrappers.toml'),
+        '[[rule]]\nid = "shared-only-rule"\ndecision = "forbidden"\njustification = "Use wrapper"\ncommand = ["git", "push"]\nappend_wildcard = false\n',
+        'utf8'
+      );
+      spawnSync('git', ['init'], { cwd: remote });
+      spawnSync('git', ['add', '.'], { cwd: remote });
+      spawnSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-m', 'init'], { cwd: remote });
+
+      await mkdir(path.join(root, '.rac/rules'), { recursive: true });
+      await writeFile(
+        path.join(root, '.rac/rules/wrappers.toml'),
+        '[[rule]]\nid = "project-only-rule"\ndecision = "forbidden"\njustification = "Use wrapper"\ncommand = ["git", "push"]\nappend_wildcard = false\n',
+        'utf8'
+      );
+      await writeFile(path.join(root, '.rac/config.toml'), '[[packs]]\nid = "shared"\nrepo = "github:owner/repo"\nref = "HEAD"\n', 'utf8');
+
+      const key = Buffer.from('github:owner/repo@HEAD').toString('base64url');
+      const cachedRepo = path.join(cacheRoot, 'packs', key);
+      await mkdir(path.dirname(cachedRepo), { recursive: true });
+      spawnSync('git', ['clone', remote, cachedRepo]);
+
+      await expect(install({ cwd: root, targets: ['codex'], kinds: ['rule'] })).rejects.toThrow('codex rule flat-path collision');
+      await expect(stat(path.join(root, '.codex/rules/wrappers.toml.rules'))).rejects.toThrow();
+    } finally {
+      delete process.env.RAC_CACHE_DIR;
+    }
   });
 
   it('rejects planned-output collisions when different content targets same path', async () => {

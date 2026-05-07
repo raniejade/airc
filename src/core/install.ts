@@ -265,6 +265,14 @@ export async function install(options: InstallOptions): Promise<InstallResult> {
     planByRelPath.set(write.relPath, existing);
   }
   for (const [relPath, writes] of planByRelPath.entries()) {
+    const codexRuleWrites = writes.filter((write) => write.target === 'codex' && write.kind === 'rule');
+    if (codexRuleWrites.length <= 1) continue;
+    const sourceGroups = new Set<string>();
+    for (const write of codexRuleWrites) sourceGroups.add(`${write.pack}:${write.source}`);
+    if (sourceGroups.size <= 1) continue;
+    throw new Error(`codex rule flat-path collision at ${relPath}; conflicting source groups: ${[...sourceGroups].sort((a, b) => a.localeCompare(b)).join(', ')}`);
+  }
+  for (const [relPath, writes] of planByRelPath.entries()) {
     if (writes.length <= 1) continue;
     const byHash = new Set(writes.map((write) => write.hash));
     if (byHash.size > 1) {
