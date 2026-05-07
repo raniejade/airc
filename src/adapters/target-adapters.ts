@@ -209,9 +209,9 @@ function codexAdapter(): TargetAdapter {
             lines.push(`prefix_rule(${JSON.stringify(tool.pattern)}, ${JSON.stringify(tool.decision)}, ${JSON.stringify(tool.justification)}, ${tool.appendWildcard ? 'true' : 'false'})`);
           }
           const content = `${lines.join('\n')}\n`;
-          const [packId, source] = sourceKey.split('::', 2);
+          const [, source] = sourceKey.split('::', 2);
           const sourceFile = path.basename(source);
-          const relPath = `.codex/rules/${packId}/${sourceFile}.rules`;
+          const relPath = `.codex/rules/${sourceFile}.rules`;
           for (const rule of sourceRules) {
             outputs.push({ pack: rule.pack, target: 'codex', kind: 'rule', id: rule.id, source: rule.source.relPath, relPath, manifestRelPath: vendorManifestRelPath('codex', 'rule'), inventory: [{ version: 1, format: 'file', selector: '$' }], content, hash: sha256(content), isJson: false });
           }

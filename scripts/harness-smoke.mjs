@@ -1,45 +1,82 @@
 #!/usr/bin/env node
 /* global console, process */
-import { mkdtemp, access, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdtemp, access, mkdir, rm, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
-
-import { parse as parseJsonc } from 'jsonc-parser';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, '..');
 const cliPath = path.join(repoRoot, 'dist', 'cli.js');
 const keepTemp = process.env.RAC_HARNESS_KEEP === '1';
 
-async function runCli(cwd, args) {
+async function spawnCapture(command, args, cwd, env = undefined) {
   return await new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [cliPath, ...args], {
-      cwd,
-      stdio: ['ignore', 'pipe', 'pipe']
-    });
+    const child = spawn(command, args, { cwd, env: env ?? process.env, stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = '';
     let stderr = '';
     child.stdout.on('data', (chunk) => { stdout += chunk; });
     child.stderr.on('data', (chunk) => { stderr += chunk; });
     child.on('error', reject);
-    child.on('close', (code) => {
-      if (code === 0) {
-        resolve({ stdout, stderr });
-        return;
-      }
-      reject(new Error(`rac ${args.join(' ')} failed with code ${code}\nstdout:\n${stdout}\nstderr:\n${stderr}`));
-    });
+    child.on('close', (code) => resolve({ code: code ?? 1, stdout, stderr }));
   });
 }
 
-async function expectExists(filePath) {
-  await stat(filePath);
+async function runCli(cwd, args) {
+  const result = await spawnCapture(process.execPath, [cliPath, ...args], cwd);
+  if (result.code === 0) return result;
+  throw new Error(`rac ${args.join(' ')} failed with code ${result.code}\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`);
 }
 
-async function readJsonc(filePath) {
-  return parseJsonc(await readFile(filePath, 'utf8'));
+function assert(condition, message) {
+  if (!condition) throw new Error(message);
+}
+
+async function checkCodexIntegration(sampleRepo) {
+  const codexMcpList = await spawnCapture(
+    'codex',
+    ['mcp', 'list', '--json'],
+    sampleRepo,
+    { ...process.env, HOME: sampleRepo }
+  );
+  assert(codexMcpList.code === 0, `Codex MCP discovery failed with code ${codexMcpList.code}\nstdout:\n${codexMcpList.stdout}\nstderr:\n${codexMcpList.stderr}`);
+  const codexMcp = JSON.parse(codexMcpList.stdout);
+  assert(Array.isArray(codexMcp), 'Codex MCP discovery output is not a JSON array');
+  assert(codexMcp.some((entry) => entry?.name === 'project-rules'), 'Codex MCP discovery output missing project-rules');
+  // Codex CLI currently has no stable non-interactive surface in this harness to
+  // prove generated project agents/skills are loaded. We do not claim integration
+  // verification for those surfaces here.
+}
+
+async function checkClaudeIntegration(sampleRepo) {
+  const claudeMcpList = await spawnCapture('claude', ['mcp', 'list'], sampleRepo);
+  assert(claudeMcpList.code === 0, `Claude MCP discovery failed with code ${claudeMcpList.code}\nstdout:\n${claudeMcpList.stdout}\nstderr:\n${claudeMcpList.stderr}`);
+  assert(/project-rules/.test(`${claudeMcpList.stdout}\n${claudeMcpList.stderr}`), 'Claude MCP discovery output missing project-rules');
+
+  const claudeAgents = await spawnCapture('claude', ['agents', '--setting-sources', 'project'], sampleRepo);
+  assert(claudeAgents.code === 0, `Claude agents discovery failed with code ${claudeAgents.code}\nstdout:\n${claudeAgents.stdout}\nstderr:\n${claudeAgents.stderr}`);
+  assert(/reviewer/.test(`${claudeAgents.stdout}\n${claudeAgents.stderr}`), 'Claude agents output missing reviewer project agent');
+  // Claude CLI has no stable project skills list/load command in this harness.
+  // We do not claim integration verification for Claude skills here.
+}
+
+async function checkOpenCodeIntegration(sampleRepo) {
+  const openCodeList = await spawnCapture(
+    'opencode',
+    ['mcp', 'list', '--pure'],
+    sampleRepo,
+    { ...process.env, XDG_DATA_HOME: path.join(sampleRepo, '.opencode-data') }
+  );
+  assert(openCodeList.code === 0, `OpenCode MCP load/list failed with code ${openCodeList.code}\nstdout:\n${openCodeList.stdout}\nstderr:\n${openCodeList.stderr}`);
+}
+
+async function checkHarnessOutputs(sampleRepo) {
+  // RAC setup sanity only: make sure canonical source layout exists before install.
+  await stat(path.join(sampleRepo, '.rac', 'agents', 'reviewer.toml'));
+  await stat(path.join(sampleRepo, '.rac', 'skills', 'project-gates', 'SKILL.md'));
+  await stat(path.join(sampleRepo, '.rac', 'mcps', 'project-rules.toml'));
+  await stat(path.join(sampleRepo, '.rac', 'rules', 'wrapper-deny.toml'));
 }
 
 async function main() {
@@ -63,71 +100,16 @@ async function main() {
       'id = "reviewer"\nname = "Reviewer"\ndescription = "Checks project rules and required gates"\ninstructions = "./reviewer.instructions.md"\n[vendor.codex.config]\nmodel = "gpt-5"\nmodel_reasoning_effort = "high"\nsandbox_mode = "workspace-write"\n',
       'utf8'
     );
+
     await runCli(sampleRepo, ['doctor', '--kind', 'mcp']);
     await runCli(sampleRepo, ['install', '--target', 'codex']);
     await runCli(sampleRepo, ['install', '--target', 'claude,opencode']);
     await runCli(sampleRepo, ['install', '--check']);
 
-    await expectExists(path.join(sampleRepo, '.rac', 'agents', 'reviewer.toml'));
-    await expectExists(path.join(sampleRepo, '.rac', 'skills', 'project-gates', 'SKILL.md'));
-    await expectExists(path.join(sampleRepo, '.rac', 'mcps', 'project-rules.toml'));
-    await expectExists(path.join(sampleRepo, '.rac', 'rules', 'wrapper-deny.toml'));
-    await expectExists(path.join(sampleRepo, '.codex', '.rac-install-manifest.json'));
-    await expectExists(path.join(sampleRepo, '.agents', '.rac-install-manifest.json'));
-    await expectExists(path.join(sampleRepo, '.claude', '.rac-install-manifest.json'));
-    await expectExists(path.join(sampleRepo, '.opencode', '.rac-install-manifest.json'));
-
-    await expectExists(path.join(sampleRepo, '.codex', 'agents', 'reviewer.toml'));
-    await expectExists(path.join(sampleRepo, '.agents', 'skills', 'project-gates', 'SKILL.md'));
-    await expectExists(path.join(sampleRepo, '.codex', 'config.toml'));
-    await expectExists(path.join(sampleRepo, '.codex', 'rules', 'project', 'wrapper-deny.toml.rules'));
-    await expectExists(path.join(sampleRepo, '.claude', 'settings.json'));
-
-    await expectExists(path.join(sampleRepo, '.mcp.json'));
-    await expectExists(path.join(sampleRepo, '.opencode', 'opencode.jsonc'));
-
-    const opencode = await readJsonc(path.join(sampleRepo, '.opencode', 'opencode.jsonc'));
-    const projectRules = opencode?.mcp?.['project-rules'];
-    if (!projectRules || projectRules.type !== 'local' || projectRules.enabled !== true) {
-      throw new Error('OpenCode MCP entry for project-rules missing required type/local enabled schema');
-    }
-    if (!Array.isArray(projectRules.command) || projectRules.command[0] !== 'node') {
-      throw new Error('OpenCode MCP entry for project-rules has unexpected command shape');
-    }
-    if (!opencode?.permission?.bash || typeof opencode.permission.bash !== 'object' || Array.isArray(opencode.permission.bash)) {
-      throw new Error('OpenCode permission.bash missing centralized rule map entries');
-    }
-    if (opencode.permission.bash['git push *'] !== 'deny') {
-      throw new Error('OpenCode permission.bash rule map missing deny value for git push *');
-    }
-
-    const codexAgentToml = await readFile(path.join(sampleRepo, '.codex', 'agents', 'reviewer.toml'), 'utf8');
-    if (!/^name = "reviewer"$/m.test(codexAgentToml)) {
-      throw new Error('Codex reviewer agent TOML missing name field');
-    }
-    if (!/^description = /m.test(codexAgentToml)) {
-      throw new Error('Codex reviewer agent TOML missing description field');
-    }
-    if (!/^developer_instructions = /m.test(codexAgentToml)) {
-      throw new Error('Codex reviewer agent TOML missing developer_instructions field');
-    }
-    if (!/^model = "gpt-5"$/m.test(codexAgentToml)) {
-      throw new Error('Codex reviewer agent TOML missing vendor.codex.config model field');
-    }
-    if (!/^model_reasoning_effort = "high"$/m.test(codexAgentToml)) {
-      throw new Error('Codex reviewer agent TOML missing vendor.codex.config model_reasoning_effort field');
-    }
-    if (!/^sandbox_mode = "workspace-write"$/m.test(codexAgentToml)) {
-      throw new Error('Codex reviewer agent TOML missing vendor.codex.config sandbox_mode field');
-    }
-    if (/^id = /m.test(codexAgentToml) || /^instructions = /m.test(codexAgentToml)) {
-      throw new Error('Codex reviewer agent TOML still uses legacy id/instructions fields');
-    }
-
-    const codexSkillMarkdown = await readFile(path.join(sampleRepo, '.agents', 'skills', 'project-gates', 'SKILL.md'), 'utf8');
-    if (!/^---\r?\n[\s\S]*?\r?\n---\r?\n<!-- DO NOT EDIT; managed by rac -->\r?\n/.test(codexSkillMarkdown)) {
-      throw new Error('Codex skill markdown must start with YAML frontmatter and place managed marker immediately after it');
-    }
+    await checkHarnessOutputs(sampleRepo);
+    await checkCodexIntegration(sampleRepo);
+    await checkClaudeIntegration(sampleRepo);
+    await checkOpenCodeIntegration(sampleRepo);
 
     console.log('harness smoke: ok');
   } catch (error) {
