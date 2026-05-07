@@ -99,6 +99,17 @@ model = "sonnet"
 
 - `instructions` can be inline text or a relative file path like `./instructions/reviewer.md`.
 - Agent instruction templates are opt-in via file suffix: `.tpl.md` or `.tpl.txt`.
+- Template example:
+
+```markdown
+{% if vendor.codex %}
+Use Codex-specific execution rules.
+{% elsif vendor.claude %}
+Use Claude-specific execution rules.
+{% else %}
+Use vendor-neutral execution rules.
+{% endif %}
+```
 
 Skill definition (`.rac/skills/<id>/SKILL.md`):
 
@@ -121,6 +132,17 @@ Run the release checklist and report blocking issues.
 - Skills may use either `SKILL.md` or `SKILL.tpl.md` (not both in one directory).
 - Template scope is limited to booleans: `vendor.claude`, `vendor.codex`, `vendor.opencode`.
 - Unknown template variables/filters fail fast; includes/partials are not supported.
+- `SKILL.tpl.md` can use the same conditional shape:
+
+```markdown
+{% if vendor.codex %}
+Codex skill behavior.
+{% elsif vendor.claude %}
+Claude skill behavior.
+{% else %}
+Default skill behavior.
+{% endif %}
+```
 
 - Frontmatter is TOML between the opening/closing `+++` delimiters, then the skill body.
 - Assets are resolved relative to the skill directory and copied with the installed skill.
@@ -213,7 +235,6 @@ Without `--force`, overwrite rules are:
 - allowed: manifest-owned files
 - allowed: TOML/JSONC files with RAC managed warning at byte 0
 - allowed: markdown files with YAML frontmatter at byte 0 and RAC managed marker immediately after the closing frontmatter
-- allowed: legacy frontmatter-sensitive markers (backward safety path)
 - blocked: unmanaged JSON files
 - blocked: other unmanaged files without markers
 

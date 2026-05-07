@@ -453,7 +453,7 @@ describe('install + doctor', () => {
     await expect(install({ cwd: root, targets: ['opencode'], kinds: ['mcp'], force: true })).resolves.toBeTruthy();
   });
 
-  it('recognizes new markdown warnings and legacy markers for manifest-loss overwrite safety', async () => {
+  it('recognizes managed warnings for manifest-loss overwrite safety and rejects legacy marker-only files', async () => {
     const root = await makeTmp();
     await seed(root);
 
@@ -468,7 +468,10 @@ describe('install + doctor', () => {
 
     await rm(manifestPath);
     await writeFile(agentPath, '<!-- managed-by-rac -->\nold generated content\n', 'utf8');
-    await expect(install({ cwd: root, targets: ['codex'], kinds: ['agent'] })).resolves.toBeTruthy();
+    await expect(install({ cwd: root, targets: ['codex'], kinds: ['agent'] })).rejects.toThrow('refusing overwrite unmanaged file');
+
+    await writeFile(agentPath, '<!-- rac-frontmatter-sensitive -->\nold generated content\n', 'utf8');
+    await expect(install({ cwd: root, targets: ['codex'], kinds: ['agent'] })).rejects.toThrow('refusing overwrite unmanaged file');
   });
 
   it('treats markdown marker in body as unmanaged when manifest is missing', async () => {

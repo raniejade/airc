@@ -9,7 +9,7 @@ import { buildRuntimeConfig } from './config-model.js';
 import { deleteManifest, loadManifest, saveManifest } from './manifest.js';
 import { loadAgents, loadMcps, loadRules, loadSkills, resolvePacks } from './parsers.js';
 import type { InstallManifest, InstallOptions, InstallResult, Kind, ManifestRecord, Target } from './types.js';
-import { LEGACY_MARKERS, MANAGED_JSONC_WARNING, MANAGED_MARKDOWN_WARNING, MANAGED_TOML_WARNING, resolveContainedPath, sha256 } from './util.js';
+import { MANAGED_JSONC_WARNING, MANAGED_MARKDOWN_WARNING, MANAGED_TOML_WARNING, resolveContainedPath, sha256 } from './util.js';
 
 type PlannedWrite = ManifestRecord & {
   manifestRelPath: string;
@@ -65,7 +65,7 @@ async function canOverwrite(filePath: string, ownedRelPaths: Set<string>, relPat
   if (startsWithManagedLine(existing, MANAGED_TOML_WARNING)) return true;
   if (startsWithManagedLine(existing, MANAGED_JSONC_WARNING)) return true;
   if (hasCanonicalManagedMarkdown(existing)) return true;
-  return LEGACY_MARKERS.some((marker) => existing.includes(marker));
+  return false;
 }
 
 async function contentMatches(filePath: string, expectedHash: string): Promise<boolean> {
