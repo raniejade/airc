@@ -60,7 +60,6 @@ Responsibilities:
 - skill frontmatter merge order is `base generated/frontmatter -> vendor.<target>.config -> vendor.<target>.frontmatter`
 - skill overlay maps cannot collide with generated keys (`name`, `description`) and cannot duplicate keys across `config` + `frontmatter`
 - Enforce generated-key collision rules
-- Reject removed APIs; `vendor.codex.emit` no longer exists
 - Collect config warnings as runtime signals
 
 Non-responsibilities:
