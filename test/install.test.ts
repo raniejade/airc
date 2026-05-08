@@ -1097,4 +1097,83 @@ describe('install + doctor', () => {
     await writeFile(path.join(root, '.rac/agents/b.toml'), 'id = "same"\ninstructions = "B"\n', 'utf8');
     await expect(install({ cwd: root, targets: ['claude'], kinds: ['agent'] })).rejects.toThrow();
   });
+
+  it('config-only targets: install uses targets from [install] block when no CLI target given', async () => {
+    const root = await makeTmp();
+    await seed(root);
+    await writeFile(path.join(root, '.rac/config.toml'), '[install]\ntargets = ["claude"]\n', 'utf8');
+
+    await install({ cwd: root, targets: undefined, kinds: ['agent'] });
+
+    await expect(stat(path.join(root, '.claude/agents/reviewer.md'))).resolves.toBeTruthy();
+    await expect(stat(path.join(root, '.codex/agents/reviewer.toml'))).rejects.toThrow();
+  });
+
+  it('CLI targets override config targets when both are set', async () => {
+    const root = await makeTmp();
+    await seed(root);
+    await writeFile(path.join(root, '.rac/config.toml'), '[install]\ntargets = ["claude"]\n', 'utf8');
+
+    await install({ cwd: root, targets: ['codex'], kinds: ['agent'] });
+
+    await expect(stat(path.join(root, '.codex/agents/reviewer.toml'))).resolves.toBeTruthy();
+    await expect(stat(path.join(root, '.claude/agents/reviewer.md'))).rejects.toThrow();
+  });
+
+  it('default fallback: install uses all three targets when neither CLI nor config sets targets', async () => {
+    const root = await makeTmp();
+    await seed(root);
+
+    await install({ cwd: root, targets: undefined, kinds: ['agent'] });
+
+    await expect(stat(path.join(root, '.claude/agents/reviewer.md'))).resolves.toBeTruthy();
+    await expect(stat(path.join(root, '.codex/agents/reviewer.toml'))).resolves.toBeTruthy();
+    await expect(stat(path.join(root, '.opencode/agents/reviewer.md'))).resolves.toBeTruthy();
+  });
+
+  it('invalid install.targets value throws a clear error', async () => {
+    const root = await makeTmp();
+    await seed(root);
+    await writeFile(path.join(root, '.rac/config.toml'), '[install]\ntargets = ["bogus"]\n', 'utf8');
+
+    await expect(install({ cwd: root, targets: undefined, kinds: ['agent'] })).rejects.toThrow('invalid install.targets');
+  });
+
+  it('empty-array targets: install produces no output files and result is empty', async () => {
+    const root = await makeTmp();
+    await seed(root);
+    await writeFile(path.join(root, '.rac/config.toml'), '[install]\ntargets = []\n', 'utf8');
+
+    const result = await install({ cwd: root, targets: undefined, kinds: ['agent'] });
+
+    expect(result.create).toHaveLength(0);
+    expect(result.update).toHaveLength(0);
+    await expect(stat(path.join(root, '.claude/agents/reviewer.md'))).rejects.toThrow();
+    await expect(stat(path.join(root, '.codex/agents/reviewer.toml'))).rejects.toThrow();
+    await expect(stat(path.join(root, '.opencode/agents/reviewer.md'))).rejects.toThrow();
+  });
+
+  it('doctor respects config targets when no CLI target given', async () => {
+    // seed creates reviewer.toml with vendor.opencode.tools which triggers opencode_legacy_tools warning.
+    // With targets = ["claude"], opencode is excluded so the warning must NOT appear.
+    const root = await makeTmp();
+    await seed(root);
+    await writeFile(path.join(root, '.rac/config.toml'), '[install]\ntargets = ["claude"]\n', 'utf8');
+
+    const warnings = await doctor(root, undefined, ['agent']);
+
+    expect(warnings.some((w) => w.includes('opencode'))).toBe(false);
+  });
+
+  it('doctor CLI targets override config targets', async () => {
+    // Config restricts to claude only, but CLI passes opencode explicitly.
+    // The opencode_legacy_tools warning from seed's reviewer agent must appear.
+    const root = await makeTmp();
+    await seed(root);
+    await writeFile(path.join(root, '.rac/config.toml'), '[install]\ntargets = ["claude"]\n', 'utf8');
+
+    const warnings = await doctor(root, ['opencode'], ['agent']);
+
+    expect(warnings.some((w) => w.includes('opencode'))).toBe(true);
+  });
 });

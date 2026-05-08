@@ -10,7 +10,8 @@ const TARGET_VALUES = ['claude', 'codex', 'opencode'] as const;
 const KIND_VALUES = ['agent', 'skill', 'mcp', 'rule', 'config'] as const;
 const SCOPE_VALUES = ['project', 'user'] as const;
 
-function normalizeTargets(value: string | undefined): Target[] {
+function normalizeTargets(value: string | undefined): Target[] | undefined {
+  if (value === undefined) return undefined;
   const targets = splitCsv<Target>(value, TARGET_VALUES);
   for (const target of targets) {
     if (!TARGET_VALUES.includes(target)) throw new InvalidArgumentError(`invalid target: ${target}`);
@@ -54,7 +55,7 @@ program.command('init')
 
 program.command('install')
   .description('Install selected kinds/targets from .rac definitions')
-  .option('--target <targets>', 'comma-separated: claude,codex,opencode')
+  .option('--targets <targets>', 'comma-separated: claude,codex,opencode')
   .option('--kind <kinds>', 'comma-separated: agent,skill,mcp,rule,config')
   .option('--dry-run', 'print planned changes only')
   .option('--clean', 'delete stale files tracked by manifest for selected kind/target')
@@ -63,9 +64,9 @@ program.command('install')
   .option('--refresh-packs', 'force re-clone of shared pack caches before installing')
   .option('--scope <scope>', 'project|user (default project)')
   .option('--no-merge', 'bypass surgical merge of shared config files; write generated content wholesale')
-  .action(async (opts: { target?: string; kind?: string; dryRun?: boolean; clean?: boolean; check?: boolean; force?: boolean; refreshPacks?: boolean; scope?: string; noMerge?: boolean }) => {
+  .action(async (opts: { targets?: string; kind?: string; dryRun?: boolean; clean?: boolean; check?: boolean; force?: boolean; refreshPacks?: boolean; scope?: string; noMerge?: boolean }) => {
     const result = await install({
-      targets: normalizeTargets(opts.target),
+      targets: normalizeTargets(opts.targets),
       kinds: normalizeKinds(opts.kind),
       dryRun: !!opts.dryRun,
       clean: !!opts.clean,
@@ -83,11 +84,11 @@ program.command('install')
 
 program.command('doctor')
   .description('Validate definitions and print warnings')
-  .option('--target <targets>', 'comma-separated: claude,codex,opencode')
+  .option('--targets <targets>', 'comma-separated: claude,codex,opencode')
   .option('--kind <kinds>', 'comma-separated: agent,skill,mcp,rule,config')
   .option('--scope <scope>', 'project|user (default project)')
-  .action(async (opts: { target?: string; kind?: string; scope?: string }) => {
-    const warnings = await doctor(process.cwd(), normalizeTargets(opts.target), normalizeKinds(opts.kind), normalizeScope(opts.scope));
+  .action(async (opts: { targets?: string; kind?: string; scope?: string }) => {
+    const warnings = await doctor(process.cwd(), normalizeTargets(opts.targets), normalizeKinds(opts.kind), normalizeScope(opts.scope));
     if (warnings.length === 0) {
       console.log('ok');
       return;

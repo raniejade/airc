@@ -97,7 +97,7 @@ export type InstallManifest = {
 };
 
 export type InstallOptions = {
-  targets: Target[];
+  targets?: Target[];
   kinds: Kind[];
   dryRun?: boolean;
   clean?: boolean;

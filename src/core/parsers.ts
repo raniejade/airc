@@ -284,7 +284,7 @@ export async function loadVendorConfigs(root: string, packId: string): Promise<V
   return out;
 }
 
-export async function loadInstallSettings(projectRoot: string): Promise<{ merge: boolean }> {
+export async function loadInstallSettings(projectRoot: string): Promise<{ merge: boolean; targets?: Target[] }> {
   const configPath = path.join(projectRoot, 'config.toml');
   let raw: string;
   try { raw = await readFile(configPath, 'utf8'); }
@@ -297,9 +297,23 @@ export async function loadInstallSettings(projectRoot: string): Promise<{ merge:
   }
   const installTable = installRaw as Record<string, unknown>;
   const mergeRaw = installTable.merge;
-  if (mergeRaw === undefined) return { merge: true };
-  if (typeof mergeRaw !== 'boolean') throw new Error(`invalid install.merge in ${configPath}; expected boolean`);
-  return { merge: mergeRaw };
+  let merge = true;
+  if (mergeRaw !== undefined) {
+    if (typeof mergeRaw !== 'boolean') throw new Error(`invalid install.merge in ${configPath}; expected boolean`);
+    merge = mergeRaw;
+  }
+  const targetsRaw = installTable.targets;
+  if (targetsRaw === undefined) return { merge };
+  if (!Array.isArray(targetsRaw)) throw new Error(`invalid install.targets in ${configPath}; expected array of strings`);
+  const targets: Target[] = [];
+  for (let i = 0; i < targetsRaw.length; i++) {
+    const item = targetsRaw[i];
+    if (!VENDOR_CONFIG_TARGETS.includes(item as Target)) {
+      throw new Error(`invalid install.targets[${i}] in ${configPath}; expected claude|codex|opencode`);
+    }
+    targets.push(item as Target);
+  }
+  return { merge, targets };
 }
 
 export async function loadProjectPackConfig(projectRoot: string): Promise<{ packs: PackSpec[] }> {
