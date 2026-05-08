@@ -80,6 +80,20 @@ function configsFor(config: RuntimeConfig, target: Target): typeof config.config
   return config.configs.filter((entry) => entry.target === target);
 }
 
+function expandRulePattern(pattern: Array<string | string[]>): string[][] {
+  return pattern
+    .map((segment) => Array.isArray(segment) ? segment : [segment])
+    .reduce<string[][]>((acc, options) => {
+      const next: string[][] = [];
+      for (const base of acc) for (const option of options) next.push([...base, option]);
+      return next;
+    }, [[]]);
+}
+
+function expandedCommandEntry(command: string[], appendWildcard: boolean): string {
+  return `${command.join(' ')}${appendWildcard ? ' *' : ''}`;
+}
+
 function selectorToPath(selector: string): string[] {
   if (selector.startsWith('$[')) {
     const segments: string[] = [];
@@ -215,33 +229,33 @@ function claudeAdapter(): TargetAdapter {
 
       if (config.rules.length > 0 || claudeConfigs.length > 0) {
         const relPath = '.claude/settings.json';
-        const deny: string[] = [];
+        const permissions: { allow?: string[]; deny?: string[] } = {};
         const entriesByRuleId = new Map<string, string[]>();
+        const selectorsByRuleId = new Map<string, '$.permissions.allow' | '$.permissions.deny'>();
         for (const rule of [...config.rules].sort((a, b) => a.id.localeCompare(b.id))) {
           const ruleEntries: string[] = [];
           for (const tool of rule.tools) {
-            const segments = tool.pattern.map((segment) => Array.isArray(segment) ? segment : [segment]);
-            const expanded = segments.reduce<string[][]>((acc, options) => {
-              const next: string[][] = [];
-              for (const base of acc) for (const option of options) next.push([...base, option]);
-              return next;
-            }, [[]]);
-            for (const command of expanded) {
-              const entry = `Bash(${command.join(' ')}${tool.appendWildcard ? ' *' : ''})`;
-              deny.push(entry);
+            const bucket = tool.decision === 'allow' ? 'allow' : 'deny';
+            for (const command of expandRulePattern(tool.pattern)) {
+              const entry = `Bash(${expandedCommandEntry(command, tool.appendWildcard)})`;
+              permissions[bucket] = [...(permissions[bucket] ?? []), entry];
               ruleEntries.push(entry);
             }
+            selectorsByRuleId.set(rule.id, `$.permissions.${bucket}`);
           }
           entriesByRuleId.set(rule.id, ruleEntries);
         }
-        assertNoSelectorConflicts(selectorsForConfigs(config, 'claude'), ['$.permissions.deny'], 'claude config');
-        const generatedRuleConfig = config.rules.length > 0 ? { permissions: { deny } } : {};
+        const generatedSelectors = [];
+        if (permissions.allow) generatedSelectors.push('$.permissions.allow');
+        if (permissions.deny) generatedSelectors.push('$.permissions.deny');
+        assertNoSelectorConflicts(selectorsForConfigs(config, 'claude'), generatedSelectors, 'claude config');
+        const generatedRuleConfig = config.rules.length > 0 ? { permissions } : {};
         const content = `${JSON.stringify(mergeObjectsDisjoint(claudeConfigValues, generatedRuleConfig), null, 2)}\n`;
         for (const entry of claudeConfigs) {
           outputs.push({ pack: entry.pack, target: 'claude', kind: 'config', id: 'config', source: entry.source.relPath, relPath, manifestRelPath: vendorManifestRelPath('claude', 'config', scope), inventory: entry.selectors.map((selector) => ({ version: 1, format: 'json', selector })), content, hash: sha256(content), isJson: true });
         }
         for (const rule of config.rules) {
-          outputs.push({ pack: rule.pack, target: 'claude', kind: 'rule', id: rule.id, source: rule.source.relPath, relPath, manifestRelPath: vendorManifestRelPath('claude', 'rule', scope), inventory: [{ version: 1, format: 'json', selector: '$.permissions.deny', entries: entriesByRuleId.get(rule.id) ?? [] }], content, hash: sha256(content), isJson: true });
+          outputs.push({ pack: rule.pack, target: 'claude', kind: 'rule', id: rule.id, source: rule.source.relPath, relPath, manifestRelPath: vendorManifestRelPath('claude', 'rule', scope), inventory: [{ version: 1, format: 'json', selector: selectorsByRuleId.get(rule.id) ?? '$.permissions.deny', entries: entriesByRuleId.get(rule.id) ?? [] }], content, hash: sha256(content), isJson: true });
         }
       }
 
@@ -257,16 +271,6 @@ function codexAdapter(): TargetAdapter {
 
   function starlarkStringList(values: string[]): string {
     return `[${values.map(starlarkString).join(', ')}]`;
-  }
-
-  function expandRulePattern(pattern: Array<string | string[]>): string[][] {
-    return pattern
-      .map((segment) => Array.isArray(segment) ? segment : [segment])
-      .reduce<string[][]>((acc, options) => {
-        const next: string[][] = [];
-        for (const base of acc) for (const option of options) next.push([...base, option]);
-        return next;
-      }, [[]]);
   }
 
   function renderCodexPrefixRule(pattern: string[], tool: { decision: string; justification: string }): string {
@@ -415,29 +419,22 @@ function opencodeAdapter(): TargetAdapter {
             : { type: 'remote', enabled: true, url: server.transport.url }, server.vendorConfig?.opencode, `mcp ${server.id} vendor.opencode.config`
           )
         ]));
-        const bashDenyCommands = new Set<string>();
+        const bashCommands = new Map<string, 'allow' | 'deny'>();
         const entriesByRuleId = new Map<string, string[]>();
         for (const rule of [...config.rules].sort((a, b) => a.id.localeCompare(b.id))) {
           const ruleEntries: string[] = [];
           for (const tool of rule.tools) {
-            const segments = tool.pattern.map((segment) => Array.isArray(segment) ? segment : [segment]);
-            const expanded = segments.reduce<string[][]>((acc, options) => {
-              const next: string[][] = [];
-              for (const base of acc) for (const option of options) next.push([...base, option]);
-              return next;
-            }, [[]]);
-            for (const command of expanded) {
-              const entry = `${command.join(' ')}${tool.appendWildcard ? ' *' : ''}`;
-              bashDenyCommands.add(entry);
+            for (const command of expandRulePattern(tool.pattern)) {
+              const entry = expandedCommandEntry(command, tool.appendWildcard);
+              bashCommands.set(entry, tool.decision === 'allow' ? 'allow' : 'deny');
               ruleEntries.push(entry);
             }
           }
           entriesByRuleId.set(rule.id, ruleEntries);
         }
         const bash = Object.fromEntries(
-          [...bashDenyCommands]
-            .sort((a, b) => a.localeCompare(b))
-            .map((command) => [command, 'deny'])
+          [...bashCommands.entries()]
+            .sort(([a], [b]) => a.localeCompare(b))
         );
         const generatedSelectors = [
           jsonPathBracketSelector(['mcp']),

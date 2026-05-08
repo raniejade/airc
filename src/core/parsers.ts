@@ -7,7 +7,7 @@ import fg from 'fast-glob';
 import { parse } from 'smol-toml';
 import { z } from 'zod';
 
-import type { AgentDef, McpDef, PackRuntime, PackSpec, RuleCommandItem, RuleDef, SkillDef, Target, VendorConfigDef } from './types.js';
+import type { AgentDef, McpDef, PackRuntime, PackSpec, RuleCommandItem, RuleDecision, RuleDef, SkillDef, Target, VendorConfigDef } from './types.js';
 import { collectEnvVarsFromText, jsonPathBracketSelector, normalizeDefinitionId } from './util.js';
 
 const PACK_ID_RE = /^[A-Za-z0-9._-]+$/;
@@ -24,6 +24,7 @@ const mcpSchema = z.object({ id: z.string().min(1), command: z.string().optional
 });
 const ruleSchema = z.object({ id: z.string().min(1), decision: z.string(), justification: z.string(), command: z.array(z.union([z.string(), z.array(z.string())])), append_wildcard: z.boolean().optional() });
 const VENDOR_CONFIG_TARGETS = ['claude', 'codex', 'opencode'] as const;
+const RULE_DECISIONS = new Set<string>(['allow', 'forbidden']);
 
 function parseTomlOrThrow(file: string, raw: string): Record<string, unknown> {
   try { return parse(raw) as Record<string, unknown>; }
@@ -424,7 +425,7 @@ export async function loadRules(root: string, packId: string): Promise<RuleDef[]
     if (!Array.isArray(rawRules) || rawRules.length === 0) throw new Error(`missing [[rule]] entries: ${file}`);
     for (const rawRule of rawRules) {
       const parsed = ruleSchema.parse(rawRule);
-      if (parsed.decision !== 'forbidden') throw new Error(`unsupported rule decision for ${parsed.id}: ${parsed.decision}`);
+      if (!RULE_DECISIONS.has(parsed.decision)) throw new Error(`unsupported rule decision for ${parsed.id}: ${parsed.decision}`);
       if (!parsed.justification.trim()) throw new Error(`missing justification for rule ${parsed.id}`);
       if (parsed.command.length === 0) throw new Error(`empty command list for rule ${parsed.id}`);
       const normalized: RuleCommandItem[] = parsed.command.map((item) => {
@@ -439,7 +440,7 @@ export async function loadRules(root: string, packId: string): Promise<RuleDef[]
       const id = normalizeDefinitionId('rule', parsed.id);
       if (ids.has(id)) throw new Error(`duplicate rule id: ${id}`);
       ids.add(id);
-      out.push({ pack: packId, packRoot: root, id, decision: 'forbidden', justification: parsed.justification, command: normalized, append_wildcard: parsed.append_wildcard ?? true, sourcePath: file, sourceName: path.relative(root, file) });
+      out.push({ pack: packId, packRoot: root, id, decision: parsed.decision as RuleDecision, justification: parsed.justification, command: normalized, append_wildcard: parsed.append_wildcard ?? true, sourcePath: file, sourceName: path.relative(root, file) });
     }
   }
   return out;

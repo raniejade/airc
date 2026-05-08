@@ -247,7 +247,16 @@ export const claudeMcpJsonStrategy: MergeStrategy = {
   }
 };
 
-export const claudeSettingsDenyStrategy: MergeStrategy = {
+function inventoryEntriesBySelector(records: ManifestRecord[], selector: string): Set<string> {
+  const entries = new Set<string>();
+  for (const record of records) {
+    if (record.inventory[0]?.selector !== selector) continue;
+    for (const entry of inventoryEntries(record)) entries.add(entry);
+  }
+  return entries;
+}
+
+export const claudeSettingsPermissionsStrategy: MergeStrategy = {
   applies(target, relPath) {
     return target === 'claude' && relPath === '.claude/settings.json';
   },
@@ -256,34 +265,32 @@ export const claudeSettingsDenyStrategy: MergeStrategy = {
     const generated = parseJsonObject(ctx.generated);
     applyConfigSelectors(existing, generated, ctx, 'claude');
 
-    const prevEntries = new Set<string>();
-    for (const record of relevantRecords(ctx.ownedRecords, 'claude', 'rule')) {
-      for (const entry of inventoryEntries(record)) prevEntries.add(entry);
-    }
-    const nextEntries = new Set<string>();
-    for (const record of relevantRecords(ctx.nextRecords, 'claude', 'rule')) {
-      for (const entry of inventoryEntries(record)) nextEntries.add(entry);
-    }
-
     const permissions = asObject(existing.permissions);
-    const existingDeny = Array.isArray(permissions.deny) ? permissions.deny.filter((entry): entry is string => typeof entry === 'string') : [];
+    const mergePermissionList = (key: 'allow' | 'deny'): void => {
+      const selector = `$.permissions.${key}`;
+      const prevEntries = inventoryEntriesBySelector(relevantRecords(ctx.ownedRecords, 'claude', 'rule'), selector);
+      const nextEntries = inventoryEntriesBySelector(relevantRecords(ctx.nextRecords, 'claude', 'rule'), selector);
+      const existingEntries = Array.isArray(permissions[key]) ? permissions[key].filter((entry): entry is string => typeof entry === 'string') : [];
 
-    let merged: string[];
-    if (ctx.selectedKinds.has('rule')) {
-      const filtered = existingDeny.filter((entry) => !prevEntries.has(entry) || nextEntries.has(entry));
-      merged = [...filtered];
-      for (const entry of [...nextEntries].sort((a, b) => a.localeCompare(b))) {
-        if (!merged.includes(entry)) merged.push(entry);
+      let merged: string[];
+      if (ctx.selectedKinds.has('rule')) {
+        const filtered = existingEntries.filter((entry) => !prevEntries.has(entry) || nextEntries.has(entry));
+        merged = [...filtered];
+        for (const entry of [...nextEntries].sort((a, b) => a.localeCompare(b))) {
+          if (!merged.includes(entry)) merged.push(entry);
+        }
+      } else {
+        merged = existingEntries;
       }
-    } else {
-      merged = existingDeny;
-    }
 
-    if (merged.length > 0) {
-      permissions.deny = merged;
-      existing.permissions = permissions;
-    } else if (Object.keys(permissions).filter((k) => k !== 'deny').length > 0) {
-      delete permissions.deny;
+      if (merged.length > 0) permissions[key] = merged;
+      else delete permissions[key];
+    };
+
+    mergePermissionList('allow');
+    mergePermissionList('deny');
+
+    if (Object.keys(permissions).length > 0) {
       existing.permissions = permissions;
     } else {
       delete existing.permissions;
@@ -341,7 +348,8 @@ export const opencodeSharedJsoncStrategy: MergeStrategy = {
     if (ctx.selectedKinds.has('rule')) {
       for (const cmd of prevBash) delete bash[cmd];
       for (const cmd of nextBash) {
-        bash[cmd] = generatedBash[cmd] ?? 'deny';
+        const value = generatedBash[cmd];
+        bash[cmd] = value === 'allow' || value === 'deny' ? value : 'deny';
       }
     }
     if (Object.keys(bash).length > 0) {
@@ -362,7 +370,7 @@ export const opencodeSharedJsoncStrategy: MergeStrategy = {
 const STRATEGIES: MergeStrategy[] = [
   codexConfigTomlStrategy,
   claudeMcpJsonStrategy,
-  claudeSettingsDenyStrategy,
+  claudeSettingsPermissionsStrategy,
   opencodeSharedJsoncStrategy
 ];
 

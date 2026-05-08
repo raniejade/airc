@@ -32,6 +32,11 @@ async function setupProjectScope(sampleRepo) {
 
   await runCli(sampleRepo, ['init']);
   await writeFile(
+    path.join(sampleRepo, '.rac', 'rules', 'allow-git-status.toml'),
+    '[[rule]]\nid = "allow-git-status"\ndecision = "allow"\njustification = "Status checks are safe."\ncommand = ["git", "status"]\nappend_wildcard = false\n',
+    'utf8'
+  );
+  await writeFile(
     path.join(sampleRepo, '.rac', 'agents', 'reviewer.toml'),
     'id = "reviewer"\nname = "Reviewer"\ndescription = "Checks project rules and required gates"\ninstructions = "./reviewer.instructions.md"\n[vendor.codex.config]\nmodel = "gpt-5"\nmodel_reasoning_effort = "high"\nsandbox_mode = "workspace-write"\n',
     'utf8'
@@ -108,6 +113,11 @@ async function setupUserScope(tmpRoot, { suffix = '', noMerge = false, preSeed =
 
   const env = { ...process.env, RAC_HOME: userHome, XDG_CONFIG_HOME: xdgConfig };
   await runCli(cwd, ['init', '--scope', 'user'], env);
+  await writeFile(
+    path.join(userHome, '.rac', 'rules', 'allow-git-status.toml'),
+    '[[rule]]\nid = "allow-git-status"\ndecision = "allow"\njustification = "Status checks are safe."\ncommand = ["git", "status"]\nappend_wildcard = false\n',
+    'utf8'
+  );
   if (preSeed) await preSeedUserScope(userHome, xdgConfig);
   const installArgs = ['install', '--scope', 'user', ...(noMerge ? ['--no-merge'] : [])];
   await runCli(cwd, installArgs, env);
@@ -115,6 +125,7 @@ async function setupUserScope(tmpRoot, { suffix = '', noMerge = false, preSeed =
 
   // Sanity: outputs landed in the expected user-scope locations.
   await stat(path.join(userHome, '.codex', 'config.toml'));
+  await stat(path.join(userHome, '.codex', 'rules', 'allow-git-status.rules'));
   await stat(path.join(userHome, '.codex', 'rules', 'wrapper-deny.rules'));
   await stat(path.join(userHome, '.claude.json'));
   await stat(path.join(userHome, '.claude', 'settings.json'));

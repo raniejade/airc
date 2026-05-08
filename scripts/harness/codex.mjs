@@ -7,6 +7,7 @@ export async function checkCodexProject(sampleRepo) {
     label: 'project-scope',
     cwd: sampleRepo,
     rulesPath: path.join(sampleRepo, '.codex', 'rules', 'wrapper-deny.rules'),
+    allowRulesPath: path.join(sampleRepo, '.codex', 'rules', 'allow-git-status.rules'),
     env: { HOME: sampleRepo }
   });
 }
@@ -16,11 +17,12 @@ export async function checkCodexUser({ userHome, cwd }) {
     label: 'user-scope',
     cwd,
     rulesPath: path.join(userHome, '.codex', 'rules', 'wrapper-deny.rules'),
+    allowRulesPath: path.join(userHome, '.codex', 'rules', 'allow-git-status.rules'),
     env: { HOME: userHome }
   });
 }
 
-async function checkCodex({ label, cwd, rulesPath, env }) {
+async function checkCodex({ label, cwd, rulesPath, allowRulesPath, env }) {
   /* global process */
   const fullEnv = { ...process.env, ...env };
 
@@ -33,6 +35,16 @@ async function checkCodex({ label, cwd, rulesPath, env }) {
   assert(policy.code === 0, `Codex execpolicy (${label}) failed with code ${policy.code}\nstdout:\n${policy.stdout}\nstderr:\n${policy.stderr}`);
   const decoded = JSON.parse(policy.stdout);
   assert(decoded.decision === 'forbidden', `Codex execpolicy (${label}) did not apply generated deny rule\nstdout:\n${policy.stdout}\nstderr:\n${policy.stderr}`);
+
+  const allowPolicy = await spawnCapture(
+    'codex',
+    ['execpolicy', 'check', '--pretty', '--rules', allowRulesPath, '--', 'git', 'status'],
+    cwd,
+    fullEnv
+  );
+  assert(allowPolicy.code === 0, `Codex execpolicy allow (${label}) failed with code ${allowPolicy.code}\nstdout:\n${allowPolicy.stdout}\nstderr:\n${allowPolicy.stderr}`);
+  const allowDecoded = JSON.parse(allowPolicy.stdout);
+  assert(allowDecoded.decision === 'allow', `Codex execpolicy (${label}) did not apply generated allow rule\nstdout:\n${allowPolicy.stdout}\nstderr:\n${allowPolicy.stderr}`);
 
   const mcpList = await spawnCapture('codex', ['mcp', 'list', '--json'], cwd, fullEnv);
   assert(mcpList.code === 0, `Codex MCP discovery (${label}) failed with code ${mcpList.code}\nstdout:\n${mcpList.stdout}\nstderr:\n${mcpList.stderr}`);

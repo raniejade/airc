@@ -46,12 +46,13 @@ export type McpDef = {
 };
 
 export type RuleCommandItem = string | string[];
+export type RuleDecision = 'allow' | 'forbidden';
 
 export type RuleDef = {
   pack: Pack;
   packRoot: string;
   id: string;
-  decision: 'forbidden';
+  decision: RuleDecision;
   justification: string;
   command: RuleCommandItem[];
   append_wildcard: boolean;

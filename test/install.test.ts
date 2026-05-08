@@ -286,7 +286,11 @@ describe('install + doctor', () => {
     await writeFile(path.join(root, '.rac/config.toml'), '[vendor.codex.raw]\nmcp_servers = { other = { command = "node" } }\n', 'utf8');
     await expect(install({ cwd: root, targets: ['codex'], kinds: ['mcp', 'config'] })).rejects.toThrow('selector conflict');
 
-    await writeFile(path.join(root, '.rac/config.toml'), '[vendor.claude.raw]\npermissions = { allow = ["Bash(ls)"] }\n', 'utf8');
+    await writeFile(path.join(root, '.rac/config.toml'), '[vendor.claude.raw]\npermissions = { deny = ["Bash(ls)"] }\n', 'utf8');
+    await expect(install({ cwd: root, targets: ['claude'], kinds: ['rule', 'config'] })).rejects.toThrow('selector conflict');
+
+    await writeFile(path.join(root, '.rac/rules/allow.toml'), '[[rule]]\nid = "allow-ls"\ndecision = "allow"\njustification = "safe"\ncommand = ["ls"]\nappend_wildcard = false\n', 'utf8');
+    await writeFile(path.join(root, '.rac/config.toml'), '[vendor.claude.raw]\npermissions = { allow = ["Bash(pwd)"] }\n', 'utf8');
     await expect(install({ cwd: root, targets: ['claude'], kinds: ['rule', 'config'] })).rejects.toThrow('selector conflict');
 
     await writeFile(path.join(root, '.rac/config.toml'), '[vendor.opencode.raw]\nmcp = { other = { type = "local" } }\n', 'utf8');
@@ -296,6 +300,7 @@ describe('install + doctor', () => {
   it('installs centralized rules for codex/claude/opencode and combines opencode mcp+rule payload', async () => {
     const root = await makeTmp();
     await seed(root);
+    await writeFile(path.join(root, '.rac/rules/allow.toml'), '[[rule]]\nid = "allow-git-status"\ndecision = "allow"\njustification = "Safe status"\ncommand = ["git", "status"]\nappend_wildcard = false\n', 'utf8');
 
     await install({ cwd: root, targets: ['claude', 'codex', 'opencode'], kinds: ['mcp', 'rule'] });
 
@@ -322,11 +327,20 @@ describe('install + doctor', () => {
       '  justification = "Use wrapper",',
       ')'
     ].join('\n'));
+    const codexAllowRules = await readFile(path.join(root, '.codex/rules/allow.rules'), 'utf8');
+    expect(codexAllowRules).toContain([
+      'prefix_rule(',
+      '  pattern = ["git", "status"],',
+      '  decision = "allow",',
+      '  justification = "Safe status",',
+      ')'
+    ].join('\n'));
     expect(codexRules).not.toContain('append_wildcard');
     expect(codexRules).not.toContain('true');
     expect(codexRules).not.toContain('false');
 
-    const claudeSettings = JSON.parse(await readFile(path.join(root, '.claude/settings.json'), 'utf8')) as { permissions: { deny: string[] } };
+    const claudeSettings = JSON.parse(await readFile(path.join(root, '.claude/settings.json'), 'utf8')) as { permissions: { allow: string[]; deny: string[] } };
+    expect(claudeSettings.permissions.allow).toContain('Bash(git status)');
     expect(claudeSettings.permissions.deny).toContain('Bash(gh pr merge *)');
     expect(claudeSettings.permissions.deny).toContain('Bash(gh issue merge *)');
     expect(claudeSettings.permissions.deny).toContain('Bash(git push)');
@@ -336,11 +350,46 @@ describe('install + doctor', () => {
     expect(opencode.permission.bash['gh pr merge *']).toBe('deny');
     expect(opencode.permission.bash['gh issue merge *']).toBe('deny');
     expect(opencode.permission.bash['git push']).toBe('deny');
+    expect(opencode.permission.bash['git status']).toBe('allow');
+
+    const claudeManifest = JSON.parse(await readFile(path.join(root, '.claude/.rac-install-manifest.json'), 'utf8')) as {
+      records: Array<{ id: string; inventory: Array<{ selector: string; entries?: string[] }> }>;
+    };
+    expect(claudeManifest.records.find((record) => record.id === 'allow-git-status')?.inventory[0]).toEqual({
+      version: 1,
+      format: 'json',
+      selector: '$.permissions.allow',
+      entries: ['Bash(git status)']
+    });
+    expect(claudeManifest.records.find((record) => record.id === 'deny-git-push')?.inventory[0].selector).toBe('$.permissions.deny');
+
+    const opencodeManifest = JSON.parse(await readFile(path.join(root, '.opencode/.rac-install-manifest.json'), 'utf8')) as {
+      records: Array<{ id: string; inventory: Array<{ selector: string; entries?: string[] }> }>;
+    };
+    expect(opencodeManifest.records.find((record) => record.id === 'allow-git-status')?.inventory[0]).toEqual({
+      version: 1,
+      format: 'json',
+      selector: '$.permission.bash',
+      entries: ['git status']
+    });
+  });
+
+  it('rejects exact expanded command conflicts across allow and forbidden rules', async () => {
+    const root = await makeTmp();
+    await seed(root);
+    await writeFile(
+      path.join(root, '.rac/rules/allow-conflict.toml'),
+      '[[rule]]\nid = "allow-git-push"\ndecision = "allow"\njustification = "safe"\ncommand = ["git", "push"]\nappend_wildcard = false\n',
+      'utf8'
+    );
+
+    await expect(install({ cwd: root, targets: ['codex'], kinds: ['rule'] })).rejects.toThrow('conflicting rule decisions for command "git push": allow-git-push, deny-git-push');
   });
 
   it('preserves OpenCode shared mcp/rule sibling content across separate install/check/clean operations', async () => {
     const root = await makeTmp();
     await seed(root);
+    await writeFile(path.join(root, '.rac/rules/allow.toml'), '[[rule]]\nid = "allow-git-status"\ndecision = "allow"\njustification = "Safe status"\ncommand = ["git", "status"]\nappend_wildcard = false\n', 'utf8');
 
     await install({ cwd: root, targets: ['opencode'], kinds: ['mcp'] });
     await install({ cwd: root, targets: ['opencode'], kinds: ['rule'] });
@@ -351,10 +400,12 @@ describe('install + doctor', () => {
     }>(path.join(root, '.opencode/opencode.jsonc'));
     expect(combined.mcp).toBeTruthy();
     expect(combined.permission?.bash?.['git push']).toBe('deny');
+    expect(combined.permission?.bash?.['git status']).toBe('allow');
 
     await expect(install({ cwd: root, targets: ['opencode'], kinds: ['mcp'], check: true })).resolves.toBeTruthy();
 
     await rm(path.join(root, '.rac/rules/wrappers.toml'));
+    await rm(path.join(root, '.rac/rules/allow.toml'));
     await install({ cwd: root, targets: ['opencode'], kinds: ['rule'], clean: true });
     const cleaned = await readJsoncFile<{
       mcp?: Record<string, unknown>;
