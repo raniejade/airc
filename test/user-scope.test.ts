@@ -113,26 +113,31 @@ describe('user-scope install', () => {
     });
   });
 
-  it('claude settings.json deny[] merge preserves user entries and removes rac entries on rule removal', async () => {
+  it('claude settings.json permissions merge preserves user entries and removes rac entries on rule removal', async () => {
     await withUserScope(async (home) => {
       await seedSourceAt(home);
+      await writeFile(path.join(home, '.rac/rules/allow.toml'), '[[rule]]\nid = "allow-git-status"\ndecision = "allow"\njustification = "Safe status"\ncommand = ["git", "status"]\nappend_wildcard = false\n', 'utf8');
       await mkdir(path.join(home, '.claude'), { recursive: true });
       await writeFile(
         path.join(home, '.claude/settings.json'),
-        JSON.stringify({ theme: 'dark', permissions: { deny: ['Bash(rm -rf /)'] } }, null, 2) + '\n',
+        JSON.stringify({ theme: 'dark', permissions: { allow: ['Bash(pwd)'], deny: ['Bash(rm -rf /)'] } }, null, 2) + '\n',
         'utf8'
       );
 
       await install({ cwd: process.cwd(), targets: ['claude'], kinds: ['rule'], scope: 'user' });
-      const merged = JSON.parse(await readFile(path.join(home, '.claude/settings.json'), 'utf8')) as { theme?: string; permissions?: { deny?: string[] } };
+      const merged = JSON.parse(await readFile(path.join(home, '.claude/settings.json'), 'utf8')) as { theme?: string; permissions?: { allow?: string[]; deny?: string[] } };
       expect(merged.theme).toBe('dark');
+      expect(merged.permissions?.allow).toContain('Bash(pwd)');
+      expect(merged.permissions?.allow).toContain('Bash(git status)');
       expect(merged.permissions?.deny).toContain('Bash(rm -rf /)');
       expect(merged.permissions?.deny?.some((entry) => entry.startsWith('Bash(git push'))).toBe(true);
 
       await rm(path.join(home, '.rac/rules/wrappers.toml'));
+      await rm(path.join(home, '.rac/rules/allow.toml'));
       await install({ cwd: process.cwd(), targets: ['claude'], kinds: ['rule'], scope: 'user', clean: true });
-      const after = JSON.parse(await readFile(path.join(home, '.claude/settings.json'), 'utf8')) as { theme?: string; permissions?: { deny?: string[] } };
+      const after = JSON.parse(await readFile(path.join(home, '.claude/settings.json'), 'utf8')) as { theme?: string; permissions?: { allow?: string[]; deny?: string[] } };
       expect(after.theme).toBe('dark');
+      expect(after.permissions?.allow ?? []).toEqual(['Bash(pwd)']);
       expect(after.permissions?.deny ?? []).toEqual(['Bash(rm -rf /)']);
     });
   });

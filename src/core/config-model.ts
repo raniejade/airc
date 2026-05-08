@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 
-import type { AgentDef, McpDef, Pack, RuleDef, SkillDef, Target, VendorConfigDef } from './types.js';
+import type { AgentDef, McpDef, Pack, RuleDecision, RuleDef, SkillDef, Target, VendorConfigDef } from './types.js';
 import { assertNoTraversal, rel } from './util.js';
 
 export type ConfigWarning = {
@@ -91,7 +91,7 @@ export type VendorConfig = {
 };
 
 export type ToolRuleConfig = {
-  decision: 'forbidden';
+  decision: RuleDecision;
   justification: string;
   pattern: Array<string | string[]>;
   appendWildcard: boolean;
@@ -194,7 +194,34 @@ function assertNoConfigSelectorOverlap(configs: VendorConfigDef[]): void {
   }
 }
 
+function expandRulePattern(pattern: Array<string | string[]>): string[][] {
+  return pattern
+    .map((segment) => Array.isArray(segment) ? segment : [segment])
+    .reduce<string[][]>((acc, options) => {
+      const next: string[][] = [];
+      for (const base of acc) for (const option of options) next.push([...base, option]);
+      return next;
+    }, [[]]);
+}
+
+function validateNoRuleDecisionConflicts(rules: RuleDef[]): void {
+  const byCommand = new Map<string, { decision: RuleDecision; ids: Set<string> }>();
+  for (const rule of rules) {
+    for (const command of expandRulePattern(rule.command)) {
+      const key = `${command.join(' ')}${rule.append_wildcard ? ' *' : ''}`;
+      const existing = byCommand.get(key);
+      if (existing && existing.decision !== rule.decision) {
+        const ids = [...existing.ids, rule.id].sort((a, b) => a.localeCompare(b));
+        throw new Error(`conflicting rule decisions for command "${key}": ${ids.join(', ')}`);
+      }
+      if (existing) existing.ids.add(rule.id);
+      else byCommand.set(key, { decision: rule.decision, ids: new Set([rule.id]) });
+    }
+  }
+}
+
 export async function buildRuntimeConfig(input: BuildRuntimeConfigInput): Promise<RuntimeConfig> {
+  validateNoRuleDecisionConflicts(input.rules);
   const warnings: ConfigWarning[] = [];
   assertNoConfigSelectorOverlap(input.configs ?? []);
 

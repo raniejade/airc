@@ -36,7 +36,7 @@ Responsibilities:
 - Normalize all definition IDs (agent/skill/mcp/rule) to Unicode NFC
 - Reject unsafe IDs (leading/trailing whitespace, empty-after-trim, `.`, `..`, `/`, `\`, control chars)
 - Enforce duplicate `(kind,id)` rejection across active packs
-- Enforce rule constraints (`decision = "forbidden"` only, non-empty `justification`, non-empty `command`, non-empty alternatives, duplicate rule IDs across files)
+- Enforce rule constraints (`decision = "allow" | "forbidden"`, non-empty `justification`, non-empty `command`, non-empty alternatives, duplicate rule IDs across files, and exact expanded command conflicts across decisions)
 - Emit typed source definitions with source-path metadata
 
 Non-responsibilities:
@@ -85,9 +85,9 @@ Current adapters:
 Rule output semantics:
 
 - Codex: `.codex/rules/<source-file-stem>.rules` with `prefix_rule(...)` calls (one per expanded command prefix).
-- Claude: `.claude/settings.json` -> `permissions.deny` entries expanded from alternatives using `Bash(...)`.
-- OpenCode: `.opencode/opencode.jsonc` -> `permission.bash` object entries expanded from alternatives (`{ "<command pattern>": "deny" }`).
-- `append_wildcard` defaults to `true`; when true, adapters append trailing ` *` in string-expanded deny entries.
+- Claude: `.claude/settings.json` -> `permissions.allow` / `permissions.deny` entries expanded from alternatives using `Bash(...)`.
+- OpenCode: `.opencode/opencode.jsonc` -> `permission.bash` object entries expanded from alternatives (`{ "<command pattern>": "allow" | "deny" }`).
+- `append_wildcard` defaults to `true`; when true, adapters append trailing ` *` in string-expanded rule entries.
 - Codex writes one combined `.codex/config.toml` payload when MCP and vendor-wide config are both selected.
 - Claude writes one combined `.claude/settings.json` payload when rules and vendor-wide config are both selected.
 - OpenCode writes one combined `.opencode/opencode.jsonc` payload when MCP, rules, and vendor-wide config are selected.

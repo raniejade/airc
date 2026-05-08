@@ -145,6 +145,13 @@ justification = "Use approved wrappers for push operations."
 command = ["git", "push"]
 
 [[rule]]
+id = "allow-git-status"
+decision = "allow"
+justification = "Status checks are safe."
+command = ["git", "status"]
+append_wildcard = false
+
+[[rule]]
 id = "deny-gh-pr-merge"
 decision = "forbidden"
 justification = "Use approved wrappers for PR merges."
@@ -152,7 +159,7 @@ command = ["gh", "pr", ["merge", "close"]]
 append_wildcard = false
 ```
 
-- `decision` currently supports `forbidden`.
+- `decision` supports `allow` and `forbidden`.
 - `justification` is required.
 - `command` is a non-empty prefix made of literal segments and optional alternatives.
 - `append_wildcard` defaults to `true`.
@@ -218,7 +225,7 @@ Codex `config.toml`, Claude `.mcp.json`/`.claude.json`, Claude `settings.json`, 
 |---|---|
 | Codex `config.toml` | `[mcp_servers.<id>]` and exact vendor-wide `config` selectors |
 | Claude `.mcp.json` / `.claude.json` | `mcpServers.<id>` |
-| Claude `settings.json` | specific entries in `permissions.deny[]` and exact vendor-wide `config` selectors |
+| Claude `settings.json` | specific entries in `permissions.allow[]` / `permissions.deny[]` and exact vendor-wide `config` selectors |
 | OpenCode `opencode.jsonc` | `mcp.<id>`, `permission.bash.<cmd>`, and exact vendor-wide `config` selectors |
 
 Everything else in those files is preserved. Ownership is tracked in the per-target install manifest.

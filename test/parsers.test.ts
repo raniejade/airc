@@ -203,8 +203,11 @@ describe('parsers', () => {
     await writeFile(path.join(root, '.rac/rules/a.toml'), 'id = "x"\n', 'utf8');
     await expect(loadRules(path.join(root, '.rac'), 'project')).rejects.toThrow('missing [[rule]] entries');
 
-    await writeFile(path.join(root, '.rac/rules/a.toml'), '[[rule]]\nid = "r1"\ndecision = "allow"\njustification = "x"\ncommand = ["git"]\n', 'utf8');
+    await writeFile(path.join(root, '.rac/rules/a.toml'), '[[rule]]\nid = "r1"\ndecision = "ask"\njustification = "x"\ncommand = ["git"]\n', 'utf8');
     await expect(loadRules(path.join(root, '.rac'), 'project')).rejects.toThrow('unsupported rule decision');
+
+    await writeFile(path.join(root, '.rac/rules/a.toml'), '[[rule]]\nid = "r1"\ndecision = "allow"\njustification = "x"\ncommand = ["git"]\n', 'utf8');
+    await expect(loadRules(path.join(root, '.rac'), 'project')).resolves.toMatchObject([{ decision: 'allow' }]);
 
     await writeFile(path.join(root, '.rac/rules/a.toml'), '[[rule]]\nid = "r1"\ndecision = "forbidden"\njustification = ""\ncommand = ["git"]\n', 'utf8');
     await expect(loadRules(path.join(root, '.rac'), 'project')).rejects.toThrow();
