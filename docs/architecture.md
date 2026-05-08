@@ -13,7 +13,7 @@ The core ownership rule is: upstream stages do not know about downstream file fo
 
 ## 1) Parsed Source Files (`src/core/parsers.ts`)
 
-Inputs are loaded from the project source root:
+Inputs are loaded from the active install source root:
 
 - Required `.rac/config.toml` at every pack root
 - Project mode supports top-level `[[packs]]` entries (`id`, `repo = "github:owner/repo"`, required `ref`)
@@ -140,7 +140,7 @@ Safety model:
 - Shared config merge strategies replace only selected RAC-owned selectors, prune empty generated objects, and preserve unrelated user siblings
 - Manifest identity includes pack ID, so removed shared packs clean as stale outputs
 - Manifest loads are strict-schema validated (missing file only returns empty; invalid schema/JSON/version throws)
-- Adapter output paths, manifest paths, and manifest record `relPath`s must resolve inside project root before overwrite/write/check/save/delete/clean
+- Adapter output paths, manifest paths, and manifest record `relPath`s must resolve inside the active install target root before overwrite/write/check/save/delete/clean
 - Unmanaged files are protected from overwrite unless explicit conditions are met (`force`, manifest-owned, TOML/JSONC managed warning at byte 0, or canonical markdown shape with YAML frontmatter at byte 0 + managed marker immediately after the closing frontmatter)
 - Deletions are constrained to stale manifest-owned outputs when `clean` is enabled
 
