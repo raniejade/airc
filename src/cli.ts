@@ -10,7 +10,8 @@ const TARGET_VALUES = ['claude', 'codex', 'opencode'] as const;
 const KIND_VALUES = ['agent', 'skill', 'mcp', 'rule', 'config'] as const;
 const SCOPE_VALUES = ['project', 'user'] as const;
 
-function normalizeTargets(value: string | undefined): Target[] {
+function normalizeTargets(value: string | undefined): Target[] | undefined {
+  if (value === undefined) return undefined;
   const targets = splitCsv<Target>(value, TARGET_VALUES);
   for (const target of targets) {
     if (!TARGET_VALUES.includes(target)) throw new InvalidArgumentError(`invalid target: ${target}`);

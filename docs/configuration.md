@@ -217,7 +217,20 @@ ref = "main"
 - RAC resolves shared packs with system `git` into cache (`$RAC_CACHE_DIR` or `~/.cache/rac`), then checks out `--detach <ref>`.
 - Shared packs can provide definitions but cannot define transitive `[[packs]]`.
 
-## Merge Behavior
+## Install Behavior
+
+### Targets
+
+Control which agent runtimes are installed to by setting `targets` under `[install]` in `.rac/config.toml`:
+
+```toml
+[install]
+targets = ["claude", "codex"]
+```
+
+Accepted values are `claude`, `codex`, and `opencode`. The CLI `--target` flag overrides this when both are set. If neither CLI nor config sets targets, all three targets are used as the default. An empty array `targets = []` is accepted and means "no targets — nothing is installed".
+
+### Merge Behavior
 
 Codex `config.toml`, Claude `.mcp.json`/`.claude.json`, Claude `settings.json`, and OpenCode `opencode.jsonc` are co-owned with the user. On install, RAC surgically merges only the keys it owns:
 

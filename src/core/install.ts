@@ -74,6 +74,7 @@ async function contentMatches(filePath: string, expectedHash: string): Promise<b
 }
 
 const ALL_KINDS: Kind[] = ['agent', 'skill', 'mcp', 'rule', 'config'];
+const ALL_TARGETS: Target[] = ['claude', 'codex', 'opencode'];
 
 function isManagedOpenCodeSharedJson(record: Pick<ManifestRecord, 'target' | 'kind' | 'relPath'>): boolean {
   return record.target === 'opencode' && (record.kind === 'mcp' || record.kind === 'rule' || record.kind === 'config') && (record.relPath === '.opencode/opencode.jsonc' || record.relPath === '.opencode/opencode.json' || record.relPath === 'opencode/opencode.jsonc');
@@ -196,6 +197,7 @@ export async function install(options: InstallOptions): Promise<InstallResult> {
   const { sourceRoot, targetRootHome, scope } = resolveScopeRoots(options);
   const installSettings = await loadInstallSettings(sourceRoot);
   const noMerge = options.noMerge ?? !installSettings.merge;
+  const targets = options.targets ?? installSettings.targets ?? ALL_TARGETS;
 
   const targetRootByTarget: Record<Target, string> = {
     claude: targetRootFor('claude', scope, targetRootHome),
@@ -205,7 +207,7 @@ export async function install(options: InstallOptions): Promise<InstallResult> {
 
   type ManifestEntry = { root: string; manifestRelPath: string; absPath: string; manifest: InstallManifest };
   const manifestsByAbsPath = new Map<string, ManifestEntry>();
-  for (const target of options.targets) {
+  for (const target of targets) {
     for (const kind of ALL_KINDS) {
       const manifestRelPath = vendorManifestRelPath(target, kind, scope);
       const root = targetRootByTarget[target];
@@ -243,7 +245,7 @@ export async function install(options: InstallOptions): Promise<InstallResult> {
   const config = await buildRuntimeConfig({ root: sourceRoot, agents: parsedAgents, skills: parsedSkills, mcps: parsedMcps, rules: parsedRules, configs: parsedConfigs });
 
   const plan: PlannedWrite[] = [];
-  for (const target of options.targets) {
+  for (const target of targets) {
     const adapter = adapterFor(target);
     const outputs = adapter.plan(config, scope);
     for (const output of outputs) {
@@ -297,11 +299,11 @@ export async function install(options: InstallOptions): Promise<InstallResult> {
     }
   }
 
-  const selected = (record: ManifestRecord): boolean => options.targets.includes(record.target) && options.kinds.includes(record.kind);
+  const selected = (record: ManifestRecord): boolean => targets.includes(record.target) && options.kinds.includes(record.kind);
 
   const legacyOpenCodeSharedRecords: ManifestRecord[] = [];
   let legacyOpenCodeSharedAbsPath: string | undefined;
-  if (options.targets.includes('opencode') && scope === 'project') {
+  if (targets.includes('opencode') && scope === 'project') {
     const ocRoot = targetRootByTarget.opencode;
     legacyOpenCodeSharedAbsPath = resolveContainedPath(ocRoot, '.opencode/opencode.json', 'legacy shared opencode path');
     for (const record of recordsByRelPath.get('.opencode/opencode.json') ?? []) {
@@ -309,7 +311,7 @@ export async function install(options: InstallOptions): Promise<InstallResult> {
     }
   }
   const shouldMigrateLegacyOpenCodeJson = scope === 'project'
-    && options.targets.includes('opencode')
+    && targets.includes('opencode')
     && (options.kinds.includes('mcp') || options.kinds.includes('rule') || options.kinds.includes('config'))
     && legacyOpenCodeSharedRecords.length > 0
     && legacyOpenCodeSharedAbsPath !== undefined
@@ -414,19 +416,19 @@ export async function install(options: InstallOptions): Promise<InstallResult> {
   const cleanRewriteSharedFiles: Array<{ absPath: string; content: string; hash: string; relPath: string }> = [];
   if (options.clean && !noMerge) {
     const sharedRelPathsToClean: Array<{ target: Target; relPath: string }> = [];
-    if (options.targets.includes('opencode') && (options.kinds.includes('mcp') || options.kinds.includes('rule') || options.kinds.includes('config'))) {
+    if (targets.includes('opencode') && (options.kinds.includes('mcp') || options.kinds.includes('rule') || options.kinds.includes('config'))) {
       sharedRelPathsToClean.push({ target: 'opencode', relPath: scope === 'user' ? 'opencode/opencode.jsonc' : '.opencode/opencode.jsonc' });
     }
-    if (options.targets.includes('codex') && (options.kinds.includes('mcp') || options.kinds.includes('config'))) {
+    if (targets.includes('codex') && (options.kinds.includes('mcp') || options.kinds.includes('config'))) {
       sharedRelPathsToClean.push({ target: 'codex', relPath: '.codex/config.toml' });
     }
-    if (options.targets.includes('claude') && options.kinds.includes('mcp')) {
+    if (targets.includes('claude') && options.kinds.includes('mcp')) {
       sharedRelPathsToClean.push({ target: 'claude', relPath: scope === 'user' ? '.claude.json' : '.mcp.json' });
     }
-    if (options.targets.includes('claude') && options.kinds.includes('rule')) {
+    if (targets.includes('claude') && options.kinds.includes('rule')) {
       sharedRelPathsToClean.push({ target: 'claude', relPath: '.claude/settings.json' });
     }
-    if (options.targets.includes('claude') && options.kinds.includes('config')) {
+    if (targets.includes('claude') && options.kinds.includes('config')) {
       sharedRelPathsToClean.push({ target: 'claude', relPath: '.claude/settings.json' });
     }
 
@@ -559,9 +561,11 @@ export async function install(options: InstallOptions): Promise<InstallResult> {
   return { create, update, del };
 }
 
-export async function doctor(cwd: string, targets: Target[], kinds: Kind[], scope: Scope = 'project'): Promise<string[]> {
+export async function doctor(cwd: string, targets: Target[] | undefined, kinds: Kind[], scope: Scope = 'project'): Promise<string[]> {
   const sourceCwd = scope === 'user' ? (process.env.RAC_HOME?.trim() || os.homedir()) : cwd;
   const root = path.join(sourceCwd, '.rac');
+  const installSettings = await loadInstallSettings(root);
+  const resolvedTargets = targets ?? installSettings.targets ?? ALL_TARGETS;
   const packs = await resolvePacks(sourceCwd);
   const parsedAgents = [] as Awaited<ReturnType<typeof loadAgents>>;
   const parsedSkills = [] as Awaited<ReturnType<typeof loadSkills>>;
@@ -592,7 +596,7 @@ export async function doctor(cwd: string, targets: Target[], kinds: Kind[], scop
   }
 
   if (kinds.includes('agent')) {
-    if (targets.includes('opencode')) {
+    if (resolvedTargets.includes('opencode')) {
       warnings.push(...config.warnings.filter((warning) => warning.code === 'opencode_legacy_tools').map((warning) => warning.message));
     }
   }

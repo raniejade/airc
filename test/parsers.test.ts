@@ -5,7 +5,7 @@ import { parse as parseToml } from 'smol-toml';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { addProjectPack, listProjectPacks, removeProjectPack } from '../src/core/pack-config.js';
-import { loadAgents, loadMcps, loadRules, loadSkills, loadVendorConfigs } from '../src/core/parsers.js';
+import { loadAgents, loadInstallSettings, loadMcps, loadRules, loadSkills, loadVendorConfigs } from '../src/core/parsers.js';
 
 import { cleanupTmpDirs, makeTmp, runCli } from './helpers.js';
 
@@ -246,5 +246,43 @@ describe('parsers', () => {
     await expect(loadAgents(path.join(root, '.rac'), 'project')).rejects.toThrow('invalid agent id');
     await writeFile(path.join(root, '.rac/agents/b.toml'), 'id = "bad/name"\ninstructions = "x"\n', 'utf8');
     await expect(loadAgents(path.join(root, '.rac'), 'project')).rejects.toThrow('path separators');
+  });
+
+  it('loadInstallSettings returns { merge: true } with no targets when config file is absent', async () => {
+    const root = await makeTmp();
+    await mkdir(path.join(root, '.rac'), { recursive: true });
+    const result = await loadInstallSettings(path.join(root, '.rac'));
+    expect(result).toEqual({ merge: true });
+    expect(result.targets).toBeUndefined();
+  });
+
+  it('loadInstallSettings parses valid targets array', async () => {
+    const root = await makeTmp();
+    await mkdir(path.join(root, '.rac'), { recursive: true });
+    await writeFile(path.join(root, '.rac/config.toml'), '[install]\ntargets = ["claude", "codex"]\n', 'utf8');
+    const result = await loadInstallSettings(path.join(root, '.rac'));
+    expect(result).toEqual({ merge: true, targets: ['claude', 'codex'] });
+  });
+
+  it('loadInstallSettings throws on invalid target string', async () => {
+    const root = await makeTmp();
+    await mkdir(path.join(root, '.rac'), { recursive: true });
+    await writeFile(path.join(root, '.rac/config.toml'), '[install]\ntargets = ["bogus"]\n', 'utf8');
+    await expect(loadInstallSettings(path.join(root, '.rac'))).rejects.toThrow('invalid install.targets');
+  });
+
+  it('loadInstallSettings accepts empty targets array', async () => {
+    const root = await makeTmp();
+    await mkdir(path.join(root, '.rac'), { recursive: true });
+    await writeFile(path.join(root, '.rac/config.toml'), '[install]\ntargets = []\n', 'utf8');
+    const result = await loadInstallSettings(path.join(root, '.rac'));
+    expect(result).toEqual({ merge: true, targets: [] });
+  });
+
+  it('loadInstallSettings throws when targets is not an array', async () => {
+    const root = await makeTmp();
+    await mkdir(path.join(root, '.rac'), { recursive: true });
+    await writeFile(path.join(root, '.rac/config.toml'), '[install]\ntargets = "claude"\n', 'utf8');
+    await expect(loadInstallSettings(path.join(root, '.rac'))).rejects.toThrow('invalid install.targets');
   });
 });
