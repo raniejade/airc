@@ -42,7 +42,7 @@ async function setupProjectScope(sampleRepo) {
     'utf8'
   );
 
-  await runCli(sampleRepo, ['doctor', '--kind', 'mcp']);
+  await runCli(sampleRepo, ['doctor', '--kind', 'mcp'], { ...process.env, PROJECT_RULES_TOKEN: 'harness-smoke' });
   await runCli(sampleRepo, ['install', '--targets', 'codex']);
   await runCli(sampleRepo, ['install', '--targets', 'claude,opencode']);
   await runCli(sampleRepo, ['install', '--check']);
