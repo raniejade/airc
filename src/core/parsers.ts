@@ -8,7 +8,7 @@ import { parse } from 'smol-toml';
 import { z } from 'zod';
 
 import type { AgentDef, McpDef, PackRuntime, PackSpec, RuleCommandItem, RuleDecision, RuleDef, SkillDef, Target, VendorConfigDef } from './types.js';
-import { collectEnvVarsFromText, jsonPathBracketSelector, normalizeDefinitionId } from './util.js';
+import { asRecord, bracketSelectorPath, collectEnvVarsFromText, jsonPathBracketSelector, normalizeDefinitionId, selectorPathsOverlap } from './util.js';
 
 const PACK_ID_RE = /^[A-Za-z0-9._-]+$/;
 const GITHUB_REPO_RE = /^github:([A-Za-z0-9._-]+)\/([A-Za-z0-9._-]+)$/;
@@ -55,30 +55,38 @@ export function validatePackSpec(spec: PackSpec): void {
   if (!REF_RE.test(spec.ref)) throw new Error(`invalid pack ref: ${spec.ref}`);
 }
 
-async function runGit(args: string[], cwd?: string): Promise<void> {
-  await new Promise<void>((resolve, reject) => {
-    const child = spawn('git', args, { cwd, stdio: ['ignore', 'pipe', 'pipe'] });
-    let stderr = '';
-    child.stderr.on('data', (c) => { stderr += String(c); });
-    child.on('error', (error) => {
-      const asNodeErr = error as NodeJS.ErrnoException;
-      if (asNodeErr.code === 'ENOENT') {
-        reject(new Error('git is required to resolve shared packs; install git and ensure it is on PATH'));
-        return;
-      }
-      reject(error);
+export type GitRunner = (args: string[], cwd?: string) => Promise<void>;
+
+export function defaultGitRunner(): GitRunner {
+  return async (args, cwd) => {
+    await new Promise<void>((resolve, reject) => {
+      const child = spawn('git', args, { cwd, stdio: ['ignore', 'pipe', 'pipe'] });
+      let stderr = '';
+      child.stderr.on('data', (c) => { stderr += String(c); });
+      child.on('error', (error) => {
+        const asNodeErr = error as NodeJS.ErrnoException;
+        if (asNodeErr.code === 'ENOENT') {
+          reject(new Error('git is required to resolve shared packs; install git and ensure it is on PATH'));
+          return;
+        }
+        reject(error);
+      });
+      child.on('close', (code) => {
+        if (code === 0) {
+          resolve();
+          return;
+        }
+        reject(new Error(`git ${args.join(' ')} failed${stderr ? `: ${stderr.trim()}` : ''}`));
+      });
     });
-    child.on('close', (code) => {
-      if (code === 0) {
-        resolve();
-        return;
-      }
-      reject(new Error(`git ${args.join(' ')} failed${stderr ? `: ${stderr.trim()}` : ''}`));
-    });
-  });
+  };
 }
 
-async function ensureSharedPack(spec: PackSpec, opts: { refresh?: boolean } = {}): Promise<PackRuntime> {
+export async function ensureSharedPack(
+  spec: PackSpec,
+  opts: { refresh?: boolean; gitRunner?: GitRunner } = {},
+): Promise<PackRuntime> {
+  const runGit = opts.gitRunner ?? defaultGitRunner();
   validatePackSpec(spec);
   const gitUrl = repoToGitUrl(spec.repo);
   const key = `${spec.repo}@${spec.ref}`;
@@ -109,11 +117,6 @@ function mapId<T extends { id: string }>(items: T[], kind: string): void {
     if (seen.has(item.id)) throw new Error(`duplicate ${kind} id: ${item.id}`);
     seen.add(item.id);
   }
-}
-
-function asRecord(value: unknown): Record<string, unknown> | undefined {
-  if (!value || typeof value !== 'object' || Array.isArray(value) || value instanceof Date) return undefined;
-  return value as Record<string, unknown>;
 }
 
 function isScalarJsonValue(value: unknown): boolean {
@@ -189,36 +192,12 @@ function flattenConfigLeaves(value: Record<string, unknown>, prefix: string[] = 
 }
 
 function assertNoSelectorOverlap(selectors: string[], context: string): void {
-  const parsed = selectors.map((selector) => ({ selector, path: selectorPath(selector) }));
+  const parsed = selectors.map((selector) => ({ selector, path: bracketSelectorPath(selector) }));
   for (let i = 0; i < parsed.length; i += 1) {
     for (let j = i + 1; j < parsed.length; j += 1) {
-      if (pathsOverlap(parsed[i].path, parsed[j].path)) throw new Error(`${context} selector overlap: ${parsed[i].selector} conflicts with ${parsed[j].selector}`);
+      if (selectorPathsOverlap(parsed[i].path, parsed[j].path)) throw new Error(`${context} selector overlap: ${parsed[i].selector} conflicts with ${parsed[j].selector}`);
     }
   }
-}
-
-function selectorPath(selector: string): string[] {
-  if (!selector.startsWith('$')) return [selector];
-  const out: string[] = [];
-  let i = 1;
-  while (i < selector.length) {
-    if (selector[i] !== '[') return [selector];
-    const close = selector.indexOf(']', i);
-    if (close < 0) return [selector];
-    const parsed = JSON.parse(selector.slice(i + 1, close)) as unknown;
-    if (typeof parsed !== 'string') return [selector];
-    out.push(parsed);
-    i = close + 1;
-  }
-  return out;
-}
-
-function pathsOverlap(first: string[], second: string[]): boolean {
-  const limit = Math.min(first.length, second.length);
-  for (let i = 0; i < limit; i += 1) {
-    if (first[i] !== second[i]) return false;
-  }
-  return true;
 }
 
 function normalizeVendorTarget(rawTarget: string, configPath: string): Target {
@@ -352,7 +331,10 @@ export async function loadSharedPackConfig(root: string): Promise<void> {
   if (parsed.packs !== undefined) throw new Error(`shared pack config cannot contain [[packs]]: ${configPath}`);
 }
 
-export async function resolvePacks(cwd: string, opts: { refresh?: boolean } = {}): Promise<PackRuntime[]> {
+export async function resolvePacks(
+  cwd: string,
+  opts: { refresh?: boolean; gitRunner?: GitRunner } = {},
+): Promise<PackRuntime[]> {
   const projectRoot = path.join(cwd, '.rac');
   const configPath = path.join(projectRoot, 'config.toml');
   try { await stat(configPath); } catch { throw new Error(`missing required config: ${configPath}`); }
