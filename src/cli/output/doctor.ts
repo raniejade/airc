@@ -48,7 +48,7 @@ export function renderDoctor(warnings: ConfigWarningView[], mode: ColorMode): st
   const nE = errors.length;
   const nW = warns.length;
   const nI = infos.length;
-  lines.push(`${nE} error(s), ${nW} warning(s), ${nI} info\n`);
+  lines.push(`${nE} error(s), ${nW} warning(s), ${nI} info`);
 
   return lines.join('\n') + '\n';
 }
