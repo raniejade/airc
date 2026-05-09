@@ -59,6 +59,10 @@ describe('renderVendorTemplate', () => {
     expect(() => renderVendorTemplate(tpl, 'claude', 'badTpl')).toThrow('badTpl');
   });
 
+  it('renders an empty conditional body for non-matching vendor flag', () => {
+    expect(renderVendorTemplate('{% if vendor.codex %}X{% endif %}', 'claude', 'agents/x')).toBe('');
+  });
+
   it('plain non-template content renders verbatim', () => {
     const tpl = 'just text';
     expect(renderVendorTemplate(tpl, 'claude', 'test')).toBe('just text');

@@ -181,8 +181,8 @@ describe('selectorPath', () => {
     expect(selectorPath('"foo"."bar"')).toEqual(['foo', 'bar']);
   });
 
-  it('malformed quoted form returns selector as-is in array', () => {
-    // Unterminated quote: selector starting with $ but malformed brackets
+  it('malformed bracket form returns selector as-is in array', () => {
+    // Unterminated bracket: selector starting with $ but malformed brackets
     expect(selectorPath('$["unclosed')).toEqual(['$["unclosed']);
   });
 });
@@ -219,6 +219,10 @@ describe('expandRulePattern', () => {
   it('all scalars produces single row', () => {
     const result = expandRulePattern(['a', 'b', 'c']);
     expect(result).toEqual([['a', 'b', 'c']]);
+  });
+
+  it('returns no rows when an options segment is empty', () => {
+    expect(expandRulePattern([['a'], []])).toEqual([]);
   });
 });
 

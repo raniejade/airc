@@ -8,7 +8,7 @@ import {
   pickMergeStrategy,
   type MergeContext
 } from '../src/adapters/merge-strategies.js';
-import { MANAGED_JSONC_WARNING } from '../src/core/util.js';
+import { MANAGED_JSONC_WARNING, MANAGED_TOML_WARNING } from '../src/core/util.js';
 
 function makeCtx(overrides: Partial<MergeContext> = {}): MergeContext {
   return {
@@ -59,8 +59,7 @@ describe('codexConfigTomlStrategy', () => {
       selectedKinds: new Set()
     });
     const result = codexConfigTomlStrategy.merge(ctx);
-    expect(result.content).not.toContain('DO NOT EDIT');
-    expect(result.content).not.toContain('# managed by');
+    expect(result.content).not.toContain(MANAGED_TOML_WARNING);
   });
 
   it('merge adds new mcp entry under mcp_servers and preserves unrelated key', () => {
@@ -154,19 +153,30 @@ describe('claudeSettingsPermissionsStrategy', () => {
     expect(claudeSettingsPermissionsStrategy.applies('codex', '.claude/settings.json')).toBe(false);
   });
 
-  it('deduplicates allow/deny entries', () => {
+  it('deduplicates allow entries when two nextRecords map to the same permission', () => {
+    // Two rule records both contribute the same allow entry; selectedKinds includes 'rule'
+    // so the active merge path runs; dedup ensures the entry appears only once.
+    const makeRuleRecord = (id: string) => ({
+      version: 1 as const,
+      pack: 'project',
+      target: 'claude' as const,
+      kind: 'rule' as const,
+      id,
+      source: `rules/${id}.toml`,
+      relPath: '.claude/settings.json',
+      hash: 'abc',
+      inventory: [{ version: 1 as const, format: 'json' as const, selector: '$.permissions.allow', entries: ['Bash(git:*)'] }]
+    });
     const ctx = makeCtx({
-      existing: '{"permissions":{"allow":["Bash(git:*)","Bash(git:*)"]}}',
-      generated: '{}',
-      selectedKinds: new Set(),
+      existing: '{}',
+      generated: '{"permissions":{"allow":["Bash(git:*)"]}}',
+      selectedKinds: new Set(['rule' as const]),
       ownedRecords: [],
-      nextRecords: []
+      nextRecords: [makeRuleRecord('rule-a'), makeRuleRecord('rule-b')]
     });
     const result = claudeSettingsPermissionsStrategy.merge(ctx);
     const parsed = JSON.parse(result.content) as { permissions: { allow: string[] } };
-    // The allow list may have duplicates from existing but strategy doesn't merge if selectedKinds doesn't include 'rule'
-    // With no rule selection, existing entries are preserved as-is
-    expect(parsed.permissions.allow).toContain('Bash(git:*)');
+    expect(parsed.permissions.allow.filter((e) => e === 'Bash(git:*)')).toHaveLength(1);
   });
 
   it('removes prevEntries not in nextEntries, appends new entries', () => {
@@ -246,6 +256,57 @@ describe('opencodeSharedJsoncStrategy', () => {
     });
     const result = opencodeSharedJsoncStrategy.merge(ctx);
     expect(result.content).toContain('my-server');
+  });
+
+  it('merge places bash-rule entries under permission.bash', () => {
+    const ctx = makeCtx({
+      existing: undefined,
+      generated: '{"permission":{"bash":{"git":"allow","npm":"deny"}}}',
+      selectedKinds: new Set(['rule' as const]),
+      ownedRecords: [],
+      nextRecords: [
+        {
+          version: 1,
+          pack: 'project',
+          target: 'opencode' as const,
+          kind: 'rule' as const,
+          id: 'bash-rules',
+          source: 'rules/bash.toml',
+          relPath: '.opencode/opencode.jsonc',
+          hash: 'abc',
+          inventory: [{ version: 1 as const, format: 'json' as const, selector: '$.permission.bash', entries: ['git', 'npm'] }]
+        }
+      ]
+    });
+    const result = opencodeSharedJsoncStrategy.merge(ctx);
+    const parsed = JSON.parse(result.content.replace(/^\/\/[^\n]*\n/, '')) as {
+      permission: { bash: Record<string, string> }
+    };
+    expect(parsed.permission.bash).toHaveProperty('git', 'allow');
+    expect(parsed.permission.bash).toHaveProperty('npm', 'deny');
+  });
+
+  it('removes stale bash-rule entries from permission.bash when no longer in nextRecords', () => {
+    const staleRecord = {
+      version: 1 as const,
+      pack: 'project',
+      target: 'opencode' as const,
+      kind: 'rule' as const,
+      id: 'stale-bash-rule',
+      source: 'rules/stale.toml',
+      relPath: '.opencode/opencode.jsonc',
+      hash: 'old',
+      inventory: [{ version: 1 as const, format: 'json' as const, selector: '$.permission.bash', entries: ['stale-cmd'] }]
+    };
+    const ctx = makeCtx({
+      existing: '{"permission":{"bash":{"stale-cmd":"allow"}}}',
+      generated: '{}',
+      selectedKinds: new Set(['rule' as const]),
+      ownedRecords: [staleRecord],
+      nextRecords: []
+    });
+    const result = opencodeSharedJsoncStrategy.merge(ctx);
+    expect(result.content).not.toContain('stale-cmd');
   });
 });
 
