@@ -1177,4 +1177,21 @@ describe('install + doctor', () => {
 
     expect(warnings.some((w) => w.code === 'opencode_legacy_tools')).toBe(true);
   });
+
+  it('result.changes contains InstallChange entries with expected fields', async () => {
+    const root = await makeTmp();
+    await seed(root);
+
+    const result = await install({ cwd: root, targets: ['codex'], kinds: ['agent'] });
+
+    expect(result.changes.length).toBeGreaterThan(0);
+    const change = result.changes[0];
+    expect(['create', 'update', 'delete']).toContain(change.action);
+    expect(['claude', 'codex', 'opencode']).toContain(change.target);
+    expect(['agent', 'skill', 'mcp', 'rule', 'config']).toContain(change.kind);
+    expect(typeof change.pack).toBe('string');
+    expect(typeof change.id).toBe('string');
+    expect(typeof change.relPath).toBe('string');
+    expect(typeof change.absPath).toBe('string');
+  });
 });
