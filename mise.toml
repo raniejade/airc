@@ -1,0 +1,30 @@
+[tasks.gate]
+description = "Run the full pre-push gate: lint, typecheck, unit tests, build, and harness smoke."
+run = """
+set -euo pipefail
+npm run lint
+npm run typecheck
+npm test
+npm run build
+npm run test:harness
+"""
+
+[tasks.push-branch]
+description = "Push the current branch to origin after running the full gate."
+depends = ["gate"]
+run = '''
+set -euo pipefail
+branch=$(git symbolic-ref --short HEAD)
+if [ "$branch" = "main" ] || [ "$branch" = "master" ]; then
+  echo "refusing to push to $branch"; exit 1
+fi
+git push origin "$branch"
+'''
+
+[tasks.create-pr]
+description = "Open a GitHub PR for the current branch. Does NOT push — run push-branch first. Pass --title/--body or other gh flags via -- ..."
+run = 'gh pr create "$@"'
+
+[tasks.update-pr]
+description = "Edit the GitHub PR body/title for the current branch. Does NOT push — run push-branch first. Pass --title/--body or other gh flags via -- ..."
+run = 'gh pr edit "$@"'
