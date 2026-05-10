@@ -209,4 +209,30 @@ describe('diff()', () => {
     const output = renderDiff(result, { cwd: root, mode: plainMode });
     expect(output).toContain('(binary, content omitted)');
   });
+
+  it('10. drift detection: unchanged binary asset produces no drift', async () => {
+    const root = await makeTmp();
+    await mkdir(path.join(root, '.rac/agents'), { recursive: true });
+    await mkdir(path.join(root, '.rac/skills/img-skill'), { recursive: true });
+    await writeFile(path.join(root, '.rac/config.toml'), '', 'utf8');
+
+    // Create a skill with a binary asset containing bytes that are invalid UTF-8
+    await writeFile(
+      path.join(root, '.rac/skills/img-skill/SKILL.md'),
+      '+++\ndescription = "image skill"\nassets = ["icon.png"]\n+++\nSkill body\n',
+      'utf8'
+    );
+    // Write a binary file with bytes that cause mutation on UTF-8 round-trip (0x80-0xBF are invalid UTF-8 lead bytes)
+    const pngBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x80, 0xff, 0xfe, 0x00]);
+    await writeFile(path.join(root, '.rac/skills/img-skill/icon.png'), pngBytes);
+
+    // Install so the manifest records the hash
+    await install({ cwd: root, targets: ['claude'], kinds: ['skill'] });
+
+    // Do NOT modify the binary asset — it should not appear in drift
+    const result = await diff({ cwd: root, targets: ['claude'], kinds: ['skill'] });
+
+    const binaryDrift = result.drift.filter((d) => d.relPath.endsWith('icon.png'));
+    expect(binaryDrift).toHaveLength(0);
+  });
 });

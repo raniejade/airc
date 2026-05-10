@@ -79,8 +79,9 @@ async function collectDrift(
         continue;
       }
 
-      const raw = await readFile(absPath, 'utf8');
-      const currentHash = sha256(Buffer.from(raw));
+      const rawBuf = await readFile(absPath);
+      const currentHash = sha256(rawBuf);
+      const current = rawBuf.toString('utf8');
 
       if (currentHash !== record.hash) {
         const entry: DriftEntry = {
@@ -92,7 +93,7 @@ async function collectDrift(
           absPath,
           manifestHash: record.hash,
           currentHash,
-          current: raw,
+          current,
         };
         seen.set(seenKey, entry);
         drift.push(entry);
