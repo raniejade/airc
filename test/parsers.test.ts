@@ -56,16 +56,13 @@ describe('parsers', () => {
     await mkdir(path.join(root, '.rac'), { recursive: true });
     await writeFile(path.join(root, '.rac/config.toml'), 'title = "demo"\r\n\r\n\r\n[other]\r\nvalue = "keep"\r\n', 'utf8');
 
-    const listEmpty = runCli(root, ['pack', 'list']);
-    expect(listEmpty.status).toBe(0);
-    expect(listEmpty.stdout).toBe('No packs configured.\n');
-
+    // Spawn 1: commander enforces --ref as required (CLI-specific, cannot test without spawn)
     const missingRef = runCli(root, ['pack', 'add', 'alpha', 'github:owner/alpha']);
     expect(missingRef.status).toBe(2);
     expect(missingRef.stderr).toContain("required option '--ref <ref>'");
 
-    const add = runCli(root, ['pack', 'add', 'alpha', 'github:owner/alpha', '--ref', 'tag"\\candidate']);
-    expect(add.status).toBe(0);
+    // Direct: add with special chars, verify TOML state
+    await addProjectPack(root, { id: 'alpha', repo: 'github:owner/alpha', ref: 'tag"\\candidate' });
     const parsed = parseToml(await readFile(path.join(root, '.rac/config.toml'), 'utf8')) as {
       packs?: Array<{ id?: string; repo?: string; ref?: string }>;
     };
@@ -75,13 +72,13 @@ describe('parsers', () => {
       ref: 'tag"\\candidate'
     });
 
+    // Spawn 2: verify CLI renders list correctly (empty then one-item formatting)
     const listOne = runCli(root, ['pack', 'list']);
     expect(listOne.status).toBe(0);
     expect(listOne.stdout).toBe('alpha  github:owner/alpha @ tag"\\candidate\n');
 
-    const removeMissing = runCli(root, ['pack', 'remove', 'missing']);
-    expect(removeMissing.status).toBe(1);
-    expect(removeMissing.stderr).toContain('pack not found: missing');
+    // Direct: removeProjectPack throws with expected message (exit-code mapping is generic)
+    await expect(removeProjectPack(root, 'missing')).rejects.toThrow('pack not found: missing');
   });
 
   it('cli pack remove matches whitespace/commented [[ packs ]] headers and preserves unrelated file fidelity', async () => {

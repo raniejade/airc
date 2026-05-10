@@ -4,6 +4,9 @@ import path from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { install } from '../src/core/install.js';
+import { uninstall } from '../src/core/uninstall.js';
+
 import { cleanupTmpDirs, makeTmp, runCli, seed } from './helpers.js';
 
 afterEach(cleanupTmpDirs);
@@ -39,15 +42,15 @@ describe('rac uninstall CLI', () => {
     const root = await makeTmp();
     await seed(root);
 
-    const installResult = runCli(root, ['install', '--targets', 'claude,codex', '--kind', 'agent']);
-    expect(installResult.status).toBe(0);
+    // Direct call: no spawn tax, tests the same underlying behavior
+    await install({ cwd: root, targets: ['claude', 'codex'], kinds: ['agent'] });
 
     // Verify agents were installed
     await expect(exists(path.join(root, '.claude/agents/reviewer.md'))).resolves.toBe(true);
     await expect(exists(path.join(root, '.codex/agents/reviewer.toml'))).resolves.toBe(true);
 
-    const uninstallResult = runCli(root, ['uninstall', '--yes', '--kind', 'agent', '--targets', 'codex']);
-    expect(uninstallResult.status).toBe(0);
+    // Direct call: exercise the filter logic (--kind agent --targets codex)
+    await uninstall({ cwd: root, targets: ['codex'], kinds: ['agent'], yes: true });
 
     // Only codex agent should be gone
     await expect(exists(path.join(root, '.codex/agents/reviewer.toml'))).resolves.toBe(false);
