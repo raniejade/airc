@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { install } from '../src/core/install.js';
 import { uninstall } from '../src/core/uninstall.js';
 
-import { cleanupTmpDirs, makeTmp, runCli, seed } from './helpers.js';
+import { cleanupTmpDirs, ensureCliBuild, makeTmp, runCliInProcess, seed } from './helpers.js';
 
 afterEach(cleanupTmpDirs);
 
@@ -63,13 +63,13 @@ describe('rac uninstall CLI', () => {
     const root = await makeTmp();
     await seed(root);
 
-    const installResult = runCli(root, ['install', '--targets', 'claude,codex', '--kind', 'agent,mcp']);
+    const installResult = await runCliInProcess(root, ['install', '--targets', 'claude,codex', '--kind', 'agent,mcp']);
     expect(installResult.status).toBe(0);
 
     // Snapshot directory tree before dry-run
     const beforeSnapshot = await treeSnapshot(root);
 
-    const dryRunResult = runCli(root, ['uninstall', '--dry-run']);
+    const dryRunResult = await runCliInProcess(root, ['uninstall', '--dry-run']);
     expect(dryRunResult.status).toBe(0);
 
     // Output should indicate it's a dry-run plan
@@ -84,11 +84,11 @@ describe('rac uninstall CLI', () => {
     const root = await makeTmp();
     await seed(root);
 
-    const installResult = runCli(root, ['install', '--targets', 'claude', '--kind', 'agent']);
+    const installResult = await runCliInProcess(root, ['install', '--targets', 'claude', '--kind', 'agent']);
     expect(installResult.status).toBe(0);
 
-    // runCli uses spawnSync, which is non-TTY. Without --yes, should fail.
-    const uninstallResult = runCli(root, ['uninstall']);
+    // runCliInProcess is non-TTY. Without --yes, should fail.
+    const uninstallResult = await runCliInProcess(root, ['uninstall']);
     expect(uninstallResult.status).toBe(1);
     expect(uninstallResult.stderr).toContain('--yes');
   });
@@ -97,10 +97,10 @@ describe('rac uninstall CLI', () => {
     const root = await makeTmp();
     await seed(root);
 
-    const installResult = runCli(root, ['install', '--targets', 'claude,codex', '--kind', 'agent,mcp,rule', '--plain']);
+    const installResult = await runCliInProcess(root, ['install', '--targets', 'claude,codex', '--kind', 'agent,mcp,rule', '--plain']);
     expect(installResult.status).toBe(0);
 
-    const dryRunResult = runCli(root, ['uninstall', '--dry-run', '--plain']);
+    const dryRunResult = await runCliInProcess(root, ['uninstall', '--dry-run', '--plain']);
     expect(dryRunResult.status).toBe(0);
 
     const output = dryRunResult.stdout;
@@ -123,7 +123,7 @@ describe('rac uninstall CLI', () => {
     const root = await makeTmp();
     await seed(root);
 
-    const dryRunResult = runCli(root, ['uninstall', '--dry-run']);
+    const dryRunResult = await runCliInProcess(root, ['uninstall', '--dry-run']);
     expect(dryRunResult.status).toBe(0);
     expect(dryRunResult.stdout).toContain('Nothing to uninstall.');
   });
@@ -132,7 +132,7 @@ describe('rac uninstall CLI', () => {
     const root = await makeTmp();
     await seed(root);
 
-    const result = runCli(root, ['uninstall', '--yes']);
+    const result = await runCliInProcess(root, ['uninstall', '--yes']);
     expect(result.status).toBe(0);
     expect(result.stdout).toContain('Nothing to uninstall.');
   });
@@ -141,10 +141,15 @@ describe('rac uninstall CLI', () => {
     const root = await makeTmp();
     await seed(root);
 
-    const installResult = runCli(root, ['install', '--targets', 'claude', '--kind', 'agent']);
+    const installResult = await runCliInProcess(root, ['install', '--targets', 'claude', '--kind', 'agent']);
     expect(installResult.status).toBe(0);
     await expect(exists(path.join(root, '.claude/agents/reviewer.md'))).resolves.toBe(true);
 
+    // Option B: keep one spawn for the piped-stdin test — the stream-listener path
+    // (process.stdin.on('data',...)) is difficult to mock reliably in-process
+    // because the real process.stdin is a ReadStream and replacing it can interfere
+    // with other stream infrastructure.
+    ensureCliBuild();
     const uninstallResult = spawnSync(
       'node',
       [path.join(process.cwd(), 'dist/cli.js'), 'uninstall'],

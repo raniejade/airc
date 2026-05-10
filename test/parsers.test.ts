@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { addProjectPack, listProjectPacks, removeProjectPack } from '../src/core/pack-config.js';
 import { loadAgents, loadInstallSettings, loadMcps, loadProjectPackConfig, loadRules, loadSkills, loadVendorConfigs } from '../src/core/parsers.js';
 
-import { cleanupTmpDirs, makeTmp, runCli } from './helpers.js';
+import { cleanupTmpDirs, makeTmp, runCliInProcess } from './helpers.js';
 
 afterEach(cleanupTmpDirs);
 
@@ -56,8 +56,8 @@ describe('parsers', () => {
     await mkdir(path.join(root, '.rac'), { recursive: true });
     await writeFile(path.join(root, '.rac/config.toml'), 'title = "demo"\r\n\r\n\r\n[other]\r\nvalue = "keep"\r\n', 'utf8');
 
-    // Spawn 1: commander enforces --ref as required (CLI-specific, cannot test without spawn)
-    const missingRef = runCli(root, ['pack', 'add', 'alpha', 'github:owner/alpha']);
+    // In-process: commander enforces --ref as required
+    const missingRef = await runCliInProcess(root, ['pack', 'add', 'alpha', 'github:owner/alpha']);
     expect(missingRef.status).toBe(2);
     expect(missingRef.stderr).toContain("required option '--ref <ref>'");
 
@@ -72,8 +72,8 @@ describe('parsers', () => {
       ref: 'tag"\\candidate'
     });
 
-    // Spawn 2: verify CLI renders list correctly (empty then one-item formatting)
-    const listOne = runCli(root, ['pack', 'list']);
+    // In-process: verify CLI renders list correctly (empty then one-item formatting)
+    const listOne = await runCliInProcess(root, ['pack', 'list']);
     expect(listOne.status).toBe(0);
     expect(listOne.stdout).toBe('alpha  github:owner/alpha @ tag"\\candidate\n');
 
@@ -90,7 +90,7 @@ describe('parsers', () => {
       'utf8'
     );
 
-    const remove = runCli(root, ['pack', 'remove', 'alpha']);
+    const remove = await runCliInProcess(root, ['pack', 'remove', 'alpha']);
     expect(remove.status).toBe(0);
 
     const updated = await readFile(path.join(root, '.rac/config.toml'), 'utf8');
