@@ -8,7 +8,7 @@ import { parse } from 'smol-toml';
 import { z } from 'zod';
 
 import { parseSelector, pathsOverlap } from './selector.js';
-import type { AgentDef, McpDef, PackRuntime, PackSpec, RuleCommandItem, RuleDecision, RuleDef, SkillDef, Target, VendorConfigDef } from './types.js';
+import type { AgentDef, McpDef, PackOverride, PackRuntime, PackSpec, RuleCommandItem, RuleDecision, RuleDef, SkillDef, Target, VendorConfigDef } from './types.js';
 import { asRecord, collectEnvVarsFromText, jsonPathBracketSelector, normalizeDefinitionId } from './util.js';
 
 const PACK_ID_RE = /^[A-Za-z0-9._-]+$/;
@@ -324,6 +324,55 @@ export async function loadProjectPackConfig(projectRoot: string): Promise<{ pack
   });
   mapId(packs, 'pack');
   return { packs };
+}
+
+export async function loadPackOverrides(projectRoot: string): Promise<PackOverride[]> {
+  const configPath = path.join(projectRoot, 'config.local.toml');
+  let raw: string;
+  try {
+    raw = await readFile(configPath, 'utf8');
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return [];
+    throw err;
+  }
+
+  const parsed = parseTomlOrThrow(configPath, raw);
+
+  for (const key of Object.keys(parsed)) {
+    if (key !== 'pack_overrides') throw new Error(`unknown key "${key}" in ${configPath}; config.local.toml only supports [[pack_overrides]]`);
+  }
+
+  const rawOverrides = parsed.pack_overrides;
+  if (rawOverrides === undefined) return [];
+  if (!Array.isArray(rawOverrides)) throw new Error(`invalid [[pack_overrides]] block in ${configPath}`);
+
+  const seen = new Set<string>();
+  const out: PackOverride[] = [];
+
+  for (let i = 0; i < rawOverrides.length; i++) {
+    const entry = rawOverrides[i];
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+      throw new Error(`invalid [[pack_overrides]] entry at index ${i} in ${configPath}`);
+    }
+    const row = entry as Record<string, unknown>;
+
+    const id = row.id;
+    if (id === undefined) throw new Error(`missing pack_overrides.id at index ${i} in ${configPath}`);
+    if (typeof id !== 'string' || !id) throw new Error(`invalid pack_overrides.id at index ${i} in ${configPath}; must be a non-empty string`);
+    if (!PACK_ID_RE.test(id)) throw new Error(`invalid pack id; use ASCII path-safe letters/numbers/./_/-: ${id}`);
+    if (id === 'project') throw new Error(`invalid pack id; project is reserved for the local project pack`);
+    if (seen.has(id)) throw new Error(`duplicate pack_overrides id: ${id}`);
+    seen.add(id);
+
+    const pathVal = row.path;
+    if (pathVal === undefined) throw new Error(`missing pack_overrides.path for ${id} in ${configPath}`);
+    if (typeof pathVal !== 'string' || !pathVal) throw new Error(`invalid pack_overrides.path for ${id} in ${configPath}; must be a non-empty string`);
+    if (pathVal.includes('\0')) throw new Error(`invalid pack_overrides.path for ${id} in ${configPath}; path must not contain NUL bytes`);
+
+    out.push({ id, path: pathVal });
+  }
+
+  return out;
 }
 
 export async function loadSharedPackConfig(root: string): Promise<void> {
