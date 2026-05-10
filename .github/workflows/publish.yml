@@ -37,13 +37,12 @@ jobs:
         id: pkg
         run: echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
 
-      - name: Verify head commit is a release commit
+      - name: Verify no pending changesets
         run: |
-          subject=$(git log -1 --pretty=%s)
-          expected="chore(release): version packages"
-          if [ "$subject" != "$expected" ]; then
-            echo "Refusing to publish: HEAD subject is '$subject', expected '$expected'." >&2
-            echo "Run Create Release first and merge the resulting PR before publishing." >&2
+          pending=$(find .changeset -maxdepth 1 -name '*.md' ! -name 'README.md' | wc -l | tr -d ' ')
+          if [ "$pending" -gt 0 ]; then
+            echo "Refusing to publish: $pending pending changeset(s) in .changeset/." >&2
+            echo "Run Create Release and merge the resulting Version Packages PR before publishing." >&2
             exit 1
           fi
 
