@@ -7,8 +7,9 @@ import fg from 'fast-glob';
 import { parse } from 'smol-toml';
 import { z } from 'zod';
 
+import { findLockEntry, loadPackLock, writePackLock } from './pack-lock.js';
 import { parseSelector, pathsOverlap } from './selector.js';
-import type { AgentDef, McpDef, PackOverride, PackRuntime, PackSpec, RuleCommandItem, RuleDecision, RuleDef, SkillDef, Target, VendorConfigDef } from './types.js';
+import type { AgentDef, McpDef, PackLockEntry, PackLockFile, PackOverride, PackRuntime, PackSpec, RuleCommandItem, RuleDecision, RuleDef, SkillDef, Target, VendorConfigDef } from './types.js';
 import { asRecord, collectEnvVarsFromText, jsonPathBracketSelector, normalizeDefinitionId } from './util.js';
 
 const PACK_ID_RE = /^[A-Za-z0-9._-]+$/;
@@ -429,9 +430,23 @@ export async function ensureLocalPack(
   };
 }
 
+export class FrozenLockfileError extends Error {
+  readonly frozenLockfile = true as const;
+  constructor(message: string) {
+    super(message);
+    this.name = 'FrozenLockfileError';
+  }
+}
+
+function normalizeLockForCompare(lock: PackLockFile | null): string {
+  if (lock === null) return JSON.stringify({ version: 1, packs: [] });
+  const sorted = [...lock.packs].sort((a, b) => a.id.localeCompare(b.id));
+  return JSON.stringify({ version: 1, packs: sorted });
+}
+
 export async function resolvePacks(
   cwd: string,
-  opts: { refresh?: boolean; gitRunner?: GitRunner } = {},
+  opts: { refresh?: boolean; gitRunner?: GitRunner; frozen?: boolean } = {},
 ): Promise<PackRuntime[]> {
   const projectRoot = path.join(cwd, '.rac');
   const configPath = path.join(projectRoot, 'config.toml');
@@ -448,15 +463,80 @@ export async function resolvePacks(
     if (!found) throw new Error(`pack override target not found: ${ov.id} (no matching [[packs]] entry in ${configPath})`);
   }
 
+  const existingLock = await loadPackLock(projectRoot);
+
   const out: PackRuntime[] = [{ id: 'project', root: projectRoot }];
+  const newLockEntries: PackLockEntry[] = [];
+
   for (const spec of project.packs) {
     const ov = overrideMap.get(spec.id);
     if (ov) {
+      // Overridden packs are excluded from lockfile
       out.push(await ensureLocalPack(spec, ov.path, projectRoot));
     } else {
-      out.push(await ensureSharedPack(spec, opts));
+      let runtime: PackRuntime;
+      if (opts.refresh === true) {
+        // Resolving mode: always re-fetch
+        runtime = await ensureSharedPack(spec, { refresh: true, gitRunner: opts.gitRunner });
+      } else {
+        const lockEntry = findLockEntry(existingLock, spec);
+        if (lockEntry !== undefined) {
+          // Locked mode: use the pinned SHA
+          runtime = await ensureSharedPack(spec, { gitRunner: opts.gitRunner, lockedSha: lockEntry.resolved });
+        } else {
+          // Resolving mode: no lock entry yet
+          runtime = await ensureSharedPack(spec, { gitRunner: opts.gitRunner });
+        }
+      }
+      out.push(runtime);
+      if (runtime.resolvedSha !== undefined) {
+        newLockEntries.push({
+          id: spec.id,
+          repo: spec.repo,
+          ref: spec.ref,
+          resolved: runtime.resolvedSha,
+        });
+      }
     }
   }
+
+  const newLock: PackLockFile = { version: 1, packs: newLockEntries };
+  const lockChanged = normalizeLockForCompare(existingLock) !== normalizeLockForCompare(newLock);
+
+  if (opts.frozen === true && lockChanged) {
+    // Build violation messages
+    const violations: string[] = [];
+
+    for (const entry of newLockEntries) {
+      const existingEntry = existingLock?.packs.find(
+        (e) => e.id === entry.id && e.repo === entry.repo && e.ref === entry.ref
+      );
+      if (existingEntry === undefined) {
+        violations.push(
+          `pack '${entry.id}' has no lockfile entry; run 'rac install' without --frozen-lockfile to create one`
+        );
+      } else if (existingEntry.resolved !== entry.resolved) {
+        violations.push(
+          `pack '${entry.id}' is locked to ${existingEntry.resolved} but config.toml ref '${entry.ref}' has moved upstream; run 'rac install --refresh-packs' to update`
+        );
+      }
+    }
+
+    // Also check if entries were removed from config (stale entries in lockfile)
+    // Per spec: stale entries — do not throw for them in frozen mode, just don't write
+    // (only violations from new/changed entries are reported)
+
+    if (violations.length > 0) {
+      throw new FrozenLockfileError(`--frozen-lockfile:\n${violations.join('\n')}`);
+    }
+    // If we get here, the only change is stale entries (removed packs) — don't write, don't throw
+  } else if (opts.frozen !== true && lockChanged && newLockEntries.length > 0) {
+    await writePackLock(projectRoot, newLock);
+  } else if (opts.frozen !== true && lockChanged && newLockEntries.length === 0 && existingLock !== null) {
+    // All packs removed from config — write empty lockfile to clean up stale entries
+    await writePackLock(projectRoot, newLock);
+  }
+
   return out;
 }
 
