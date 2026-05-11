@@ -232,6 +232,57 @@ ref = "main"
 - RAC resolves shared packs with system `git` into cache (`$RAC_CACHE_DIR` or `~/.cache/rac`), then checks out `--detach <ref>`.
 - Shared packs can provide definitions but cannot define transitive `[[packs]]`.
 
+## Lockfile (`rac-lock.json`)
+
+### What it is
+
+`rac install` writes `.rac/rac-lock.json` alongside `config.toml`. The file is **committed** (not gitignored) and records the resolved commit SHA for each shared pack.
+
+```json
+{
+  "version": 1,
+  "packs": [
+    {
+      "id": "platform-rules",
+      "repo": "github:owner/repo",
+      "ref": "main",
+      "resolved": "5f3c2a9b8d7e6f1a2c3d4e5f6789abcdef012345"
+    }
+  ]
+}
+```
+
+Fields:
+
+- `id`, `repo`, `ref` — copied from `config.toml` at lock time; the lockfile entry is keyed on the `(id, repo, ref)` triple.
+- `resolved` — full 40-character commit SHA captured after `git checkout --detach FETCH_HEAD`.
+
+The `packs` array is sorted alphabetically by `id` for stable diffs.
+
+### When it is written
+
+The lockfile is created or updated automatically by `rac install`, `rac diff`, `rac pack add`, and `rac pack remove` whenever the resolved SHAs would change. It is never written during `rac init`.
+
+### `--refresh-packs`
+
+Re-resolves the floating `ref` for every non-overridden pack and rewrites the lockfile with the new SHAs. Without this flag, installs use the locked SHA directly (`git fetch <sha>` + `git checkout --detach <sha>`) and skip re-resolution.
+
+### `--frozen-lockfile`
+
+Errors with **exit code 2** if a sync would add or mutate any lockfile entry. Recommended for CI to gate on unreviewed lockfile drift. Cannot be combined with `--refresh-packs`. Supported on `rac install`, `rac diff`, and `rac doctor`.
+
+### Overrides
+
+Pack overrides (`.rac/config.local.toml`) skip git entirely. Pack overrides are excluded from the lockfile entirely. If a pack has an active override, its lockfile entry is pruned on the next `rac install`. Clearing the override and running `rac install` will re-resolve and re-lock the pack.
+
+### `rac doctor` lockfile checks
+
+`rac doctor` reports:
+
+- `ERROR` — lockfile is present but malformed (unreadable JSON or unsupported `version`).
+- `WARN` — lockfile has a stale entry for a pack no longer in `config.toml`; cleaned up automatically on the next non-frozen `rac install`.
+- `ERROR` (with `--frozen-lockfile`) — a pack in `config.toml` has no matching lockfile entry.
+
 ## Local Pack Overrides
 
 During development, you can redirect any declared pack to a local checkout without committing or pushing changes. This lets you iterate on a pack definition and see the effects immediately in `rac install` or `rac doctor`.

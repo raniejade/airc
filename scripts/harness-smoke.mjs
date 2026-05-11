@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /* global console, process */
-import { mkdtemp, access, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { cp, mkdtemp, access, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -9,7 +9,7 @@ import { parse as parseToml } from 'smol-toml';
 
 import { checkClaudeProject, checkClaudeUser } from './harness/claude.mjs';
 import { checkCodexProject, checkCodexUser } from './harness/codex.mjs';
-import { assert, makeRunCli } from './harness/lib.mjs';
+import { assert, makeRunCli, spawnCapture } from './harness/lib.mjs';
 import { checkOpenCodeProject, checkOpenCodeUser } from './harness/opencode.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -289,6 +289,36 @@ async function setupUserScope(tmpRoot, { suffix = '', noMerge = false, preSeed =
   return { userHome, xdgConfig, cwd };
 }
 
+/**
+ * Create a minimal local bare git repo that looks like a valid pack remote.
+ * Returns the file:// URL for the bare repo.
+ */
+async function setupLocalBarePackRepo(dir) {
+  await mkdir(dir, { recursive: true });
+
+  // Init a regular repo, add .rac/config.toml, commit, then bare-clone it.
+  const src = path.join(dir, 'src');
+  await mkdir(path.join(src, '.rac'), { recursive: true });
+  await writeFile(path.join(src, '.rac', 'config.toml'), '', 'utf8');
+
+  const gitEnv = {
+    ...process.env,
+    GIT_AUTHOR_NAME: 'Harness',
+    GIT_AUTHOR_EMAIL: 'harness@rac.test',
+    GIT_COMMITTER_NAME: 'Harness',
+    GIT_COMMITTER_EMAIL: 'harness@rac.test',
+  };
+  const git = (args, cwd) => spawnCapture('git', args, cwd, gitEnv);
+  await git(['init', '-b', 'main', src], dir);
+  await git(['add', '.'], src);
+  await git(['commit', '-m', 'init'], src);
+
+  const bareDir = path.join(dir, 'bare.git');
+  await git(['clone', '--bare', src, bareDir], dir);
+
+  return `file://${bareDir}`;
+}
+
 async function setupPackOverrideScope(tmpRoot) {
   const proj = path.join(tmpRoot, 'override-project');
   const pack = path.join(tmpRoot, 'override-local-pack');
@@ -307,7 +337,20 @@ async function setupPackOverrideScope(tmpRoot) {
     'utf8'
   );
   await writeFile(path.join(pack, '.rac', 'agents', 'override-agent.instructions.md'), 'x', 'utf8');
-  await runCli(proj, ['pack', 'add', 'demo', 'github:smoke/demo', '--ref', 'main']);
+
+  // Set up a local bare git repo and redirect the github: URL to it so
+  // `pack add` can clone without network access.
+  const bareRepoDir = path.join(tmpRoot, 'override-bare-pack');
+  const bareUrl = await setupLocalBarePackRepo(bareRepoDir);
+  const tmpGitConfig = path.join(tmpRoot, 'override-gitconfig');
+  await writeFile(
+    tmpGitConfig,
+    `[url "${bareUrl}"]\n\tinsteadOf = https://github.com/smoke/demo.git\n`,
+    'utf8'
+  );
+  const overrideEnv = { ...process.env, GIT_CONFIG_GLOBAL: tmpGitConfig };
+
+  await runCli(proj, ['pack', 'add', 'demo', 'github:smoke/demo', '--ref', 'main'], overrideEnv);
   await runCli(proj, ['pack', 'override', 'demo', pack]);
   const localConfig = await readFile(path.join(proj, '.rac', 'config.local.toml'), 'utf8');
   assert(localConfig.includes('id = "demo"'), `config.local.toml missing demo id: ${localConfig}`);
@@ -321,6 +364,232 @@ async function setupPackOverrideScope(tmpRoot) {
   await stat(path.join(proj, '.claude', 'agents', 'override-agent.md'));
   await runCli(proj, ['pack', 'override', 'demo', '--clear']);
   await assertAbsent(path.join(proj, '.rac', 'config.local.toml'), '.rac/config.local.toml after clear');
+}
+
+/**
+ * Advance "upstream" by committing a new file to the bare repo.
+ * Returns the new HEAD SHA (40-char hex).
+ */
+async function advanceUpstream(bareDir, gitEnv) {
+  const workDir = path.join(path.dirname(bareDir), 'advance-work-' + Date.now());
+  await mkdir(workDir, { recursive: true });
+  const git = (args, cwd) => spawnCapture('git', args, cwd, gitEnv);
+  await git(['clone', bareDir, workDir], path.dirname(bareDir));
+  // Add a new file so the commit is non-empty
+  await writeFile(path.join(workDir, `advance-${Date.now()}.txt`), `advance ${Date.now()}\n`, 'utf8');
+  await git(['add', '.'], workDir);
+  await git(['commit', '-m', 'advance upstream'], workDir);
+  await git(['push', 'origin', 'HEAD:main'], workDir);
+  const result = await git(['rev-parse', 'HEAD'], workDir);
+  await rm(workDir, { recursive: true, force: true });
+  return result.stdout.trim();
+}
+
+/**
+ * Smoke test for rac-lock.json: all 7 end-to-end verification scenarios.
+ */
+async function setupLockfileSmokeBasic(proj, lockEnv, bareDir) {
+  const gitEnv = {
+    ...process.env,
+    GIT_AUTHOR_NAME: 'Harness',
+    GIT_AUTHOR_EMAIL: 'harness@rac.test',
+    GIT_COMMITTER_NAME: 'Harness',
+    GIT_COMMITTER_EMAIL: 'harness@rac.test',
+    GIT_CONFIG_GLOBAL: lockEnv.GIT_CONFIG_GLOBAL,
+  };
+
+  // ── Scenario 1: clean install → lockfile created ──────────────────────────
+  await runCli(proj, ['init', '--empty'], lockEnv);
+  await runCli(proj, ['pack', 'add', 'lockfile-pack', 'github:smoke/lockfile-pack', '--ref', 'main'], lockEnv);
+
+  // Lockfile must already exist after pack add.
+  await stat(path.join(proj, '.rac', 'rac-lock.json'));
+  const lockRaw1 = await readFile(path.join(proj, '.rac', 'rac-lock.json'), 'utf8');
+  const lock1 = JSON.parse(lockRaw1);
+  assert(lock1.version === 1, `scenario 1: expected version 1, got ${lock1.version}`);
+  assert(Array.isArray(lock1.packs) && lock1.packs.length === 1, `scenario 1: expected 1 pack entry`);
+  assert(lock1.packs[0].id === 'lockfile-pack', `scenario 1: wrong pack id`);
+  const sha1 = lock1.packs[0].resolved;
+  assert(/^[0-9a-f]{40}$/.test(sha1), `scenario 1: resolved is not a 40-char SHA: ${sha1}`);
+
+  // Verify the SHA matches git rev-parse HEAD on the bare repo's main branch
+  const headResult = await spawnCapture('git', ['rev-parse', 'refs/heads/main'], bareDir, gitEnv);
+  const bareHead1 = headResult.stdout.trim();
+  assert(sha1 === bareHead1, `scenario 1: lockfile SHA ${sha1} does not match bare repo HEAD ${bareHead1}`);
+
+  // run rac install and verify lockfile is still present
+  await runCli(proj, ['install', '--targets', 'codex'], lockEnv);
+  await stat(path.join(proj, '.rac', 'rac-lock.json'));
+  console.log('harness: rac-lock.json scenario 1 (clean install → lockfile created) ok');
+
+  // ── Scenario 2: upstream advances, non-refresh install → SHA unchanged ────
+  const sha2Upstream = await advanceUpstream(bareDir, gitEnv);
+  assert(sha2Upstream !== sha1, `scenario 2: upstream SHA should have advanced (got same ${sha2Upstream})`);
+
+  // Regular install: must NOT pick up the new commit
+  await runCli(proj, ['install', '--targets', 'codex'], lockEnv);
+  const lockRaw2 = await readFile(path.join(proj, '.rac', 'rac-lock.json'), 'utf8');
+  const lock2 = JSON.parse(lockRaw2);
+  assert(lock2.packs[0].resolved === sha1,
+    `scenario 2: lockfile SHA changed after non-refresh install (expected ${sha1}, got ${lock2.packs[0].resolved})`);
+  console.log('harness: rac-lock.json scenario 2 (upstream advances, non-refresh → SHA pinned) ok');
+
+  // ── Scenario 3: --refresh-packs rewrites lockfile with new SHA ────────────
+  await runCli(proj, ['install', '--targets', 'codex', '--refresh-packs'], lockEnv);
+  const lockRaw3 = await readFile(path.join(proj, '.rac', 'rac-lock.json'), 'utf8');
+  const lock3 = JSON.parse(lockRaw3);
+  const sha3 = lock3.packs[0].resolved;
+  assert(sha3 === sha2Upstream,
+    `scenario 3: lockfile SHA after --refresh-packs should be ${sha2Upstream}, got ${sha3}`);
+  console.log('harness: rac-lock.json scenario 3 (--refresh-packs rewrites lockfile) ok');
+
+  // ── Scenario 4: --frozen-lockfile after scenario 3 → succeeds, no mutation ─
+  const lockBytes4Before = await readFile(path.join(proj, '.rac', 'rac-lock.json'));
+  await runCli(proj, ['install', '--targets', 'codex', '--frozen-lockfile'], lockEnv);
+  const lockBytes4After = await readFile(path.join(proj, '.rac', 'rac-lock.json'));
+  assert(lockBytes4Before.equals(lockBytes4After),
+    `scenario 4: --frozen-lockfile mutated the lockfile`);
+  console.log('harness: rac-lock.json scenario 4 (--frozen-lockfile succeeds, no mutation) ok');
+}
+
+async function setupLockfileSmokeAdvanced(proj, lockEnv) {
+
+  // ── Scenario 5: delete pack from config.toml, doctor warns, install prunes ──
+  // Read config.toml, remove the [[packs]] block for lockfile-pack directly
+  const configPath5 = path.join(proj, '.rac', 'config.toml');
+  const configRaw5 = await readFile(configPath5, 'utf8');
+  // Remove the [[packs]] block (everything from [[packs]] to next blank line or EOF)
+  const configStripped5 = configRaw5.replace(/\n?\[\[packs\]\]\nid = "lockfile-pack"\nrepo = "github:smoke\/lockfile-pack"\nref = "main"\n/g, '\n').replace(/^\n/, '');
+  await writeFile(configPath5, configStripped5, 'utf8');
+
+  // doctor should emit stale_lockfile_entry warning
+  const doctorResult5 = await runCli(proj, ['doctor', '--plain'], lockEnv);
+  assert(doctorResult5.stdout.includes('stale_lockfile_entry'),
+    `scenario 5: doctor should emit stale_lockfile_entry warning, got:\n${doctorResult5.stdout}`);
+
+  // rac install should prune the stale entry from the lockfile
+  await runCli(proj, ['install', '--targets', 'codex'], lockEnv);
+  const lockRaw5 = await readFile(path.join(proj, '.rac', 'rac-lock.json'), 'utf8');
+  const lock5 = JSON.parse(lockRaw5);
+  assert(lock5.packs.length === 0,
+    `scenario 5: expected 0 pack entries after install with stale entry pruned, got ${lock5.packs.length}`);
+  console.log('harness: rac-lock.json scenario 5 (stale entry → doctor warns, install prunes) ok');
+
+  // Re-add the pack so we can test scenario 6
+  await runCli(proj, ['pack', 'add', 'lockfile-pack', 'github:smoke/lockfile-pack', '--ref', 'main'], lockEnv);
+  const lockRaw5b = await readFile(path.join(proj, '.rac', 'rac-lock.json'), 'utf8');
+  const lock5b = JSON.parse(lockRaw5b);
+  assert(lock5b.packs.length === 1 && lock5b.packs[0].id === 'lockfile-pack',
+    `scenario 5 re-add: expected lockfile-pack entry back, got ${JSON.stringify(lock5b.packs)}`);
+
+  // ── Scenario 6: pack override → lockfile entry pruned; clear → re-resolves ──
+  // Set up a local override pack directory
+  const overridePackDir = path.join(path.dirname(proj), 'lockfile-override-pack');
+  await mkdir(path.join(overridePackDir, '.rac'), { recursive: true });
+  await writeFile(path.join(overridePackDir, '.rac', 'config.toml'), '', 'utf8');
+
+  await runCli(proj, ['pack', 'override', 'lockfile-pack', overridePackDir]);
+
+  // install with override active → lockfile entry should be pruned
+  await runCli(proj, ['install', '--targets', 'codex'], lockEnv);
+  const lockRaw6 = await readFile(path.join(proj, '.rac', 'rac-lock.json'), 'utf8');
+  const lock6 = JSON.parse(lockRaw6);
+  const overrideEntry = lock6.packs.find((p) => p.id === 'lockfile-pack');
+  assert(overrideEntry === undefined,
+    `scenario 6: lockfile entry for overridden pack should be pruned, but found: ${JSON.stringify(overrideEntry)}`);
+  console.log('harness: rac-lock.json scenario 6a (pack override → lockfile entry pruned) ok');
+
+  // Clear the override → install re-resolves and adds back
+  await runCli(proj, ['pack', 'override', 'lockfile-pack', '--clear']);
+  await runCli(proj, ['install', '--targets', 'codex'], lockEnv);
+  const lockRaw6b = await readFile(path.join(proj, '.rac', 'rac-lock.json'), 'utf8');
+  const lock6b = JSON.parse(lockRaw6b);
+  const reResolvedEntry = lock6b.packs.find((p) => p.id === 'lockfile-pack');
+  assert(reResolvedEntry !== undefined,
+    `scenario 6b: lockfile entry should be re-added after clear+install`);
+  assert(/^[0-9a-f]{40}$/.test(reResolvedEntry.resolved),
+    `scenario 6b: re-resolved SHA should be 40-char hex, got: ${reResolvedEntry.resolved}`);
+  console.log('harness: rac-lock.json scenario 6b (override cleared → lockfile entry re-resolved) ok');
+
+  // ── Scenario 7: two "clones" with --frozen-lockfile produce byte-identical output ──
+  // Add a rule to the project so install produces at least one rendered output file.
+  await mkdir(path.join(proj, '.rac', 'rules'), { recursive: true });
+  await writeFile(
+    path.join(proj, '.rac', 'rules', 'scenario7-rule.toml'),
+    '[[rule]]\nid = "scenario7-allow-echo"\ndecision = "allow"\njustification = "Scenario 7 smoke test."\ncommand = ["echo"]\nappend_wildcard = false\n',
+    'utf8'
+  );
+  // Run install in proj to get baseline rendered outputs
+  await runCli(proj, ['install', '--targets', 'codex'], lockEnv);
+
+  // Collect rendered output paths (.codex directory)
+  const codexDir = path.join(proj, '.codex');
+  const { stdout: findOut } = await spawnCapture('find', [codexDir, '-type', 'f'], proj);
+  const renderedPaths = findOut.trim().split('\n').filter(Boolean).sort();
+  assert(renderedPaths.length > 0, `scenario 7: no rendered outputs found in ${codexDir}`);
+
+  // Read baseline content
+  const baseline = new Map();
+  for (const absPath of renderedPaths) {
+    baseline.set(absPath, await readFile(absPath));
+  }
+
+  // Set up "second clone": copy project root + lockfile to fresh tempdir
+  const clone2 = path.join(path.dirname(proj), 'lockfile-clone2');
+  await mkdir(clone2, { recursive: true });
+  await cp(path.join(proj, '.rac'), path.join(clone2, '.rac'), { recursive: true });
+
+  // Simulate a fresh clone with an isolated cache dir so the clone must
+  // re-clone the pack from the bare repo instead of reusing the shared cache.
+  const freshCache = path.join(path.dirname(proj), 'lockfile-fresh-cache');
+  await mkdir(freshCache, { recursive: true });
+  const clone2Env = { ...lockEnv, RAC_CACHE_DIR: freshCache };
+
+  // Run --frozen-lockfile in the second clone
+  await runCli(clone2, ['install', '--targets', 'codex', '--frozen-lockfile'], clone2Env);
+
+  // Compare rendered outputs
+  const clone2CodexDir = path.join(clone2, '.codex');
+  const { stdout: findOut2 } = await spawnCapture('find', [clone2CodexDir, '-type', 'f'], clone2);
+  const clone2Paths = findOut2.trim().split('\n').filter(Boolean).sort();
+
+  // Map clone2 paths to their relative equivalents for comparison
+  for (const clone2AbsPath of clone2Paths) {
+    const rel = path.relative(clone2, clone2AbsPath);
+    const origAbsPath = path.join(proj, rel);
+    const origContent = baseline.get(origAbsPath);
+    assert(origContent !== undefined,
+      `scenario 7: clone2 produced unexpected output ${rel} (not in baseline)`);
+    const clone2Content = await readFile(clone2AbsPath);
+    assert(origContent.equals(clone2Content),
+      `scenario 7: output ${rel} differs between original and clone2`);
+  }
+  assert(clone2Paths.length === renderedPaths.length,
+    `scenario 7: clone2 produced ${clone2Paths.length} files vs baseline ${renderedPaths.length}`);
+  console.log('harness: rac-lock.json scenario 7 (two clones --frozen-lockfile → byte-identical) ok');
+}
+
+async function setupLockfileSmoke(tmpRoot) {
+  const proj = path.join(tmpRoot, 'lockfile-project');
+  await mkdir(proj, { recursive: true });
+
+  // Create a local bare repo to act as the pack remote.
+  // setupLocalBarePackRepo creates the bare repo at <dir>/bare.git
+  const bareParentDir = path.join(tmpRoot, 'lockfile-bare-pack');
+  const bareUrl = await setupLocalBarePackRepo(bareParentDir);
+  const bareDir = path.join(bareParentDir, 'bare.git');
+  const tmpGitConfig = path.join(tmpRoot, 'lockfile-gitconfig');
+  await writeFile(
+    tmpGitConfig,
+    `[url "${bareUrl}"]\n\tinsteadOf = https://github.com/smoke/lockfile-pack.git\n`,
+    'utf8'
+  );
+  const lockEnv = { ...process.env, GIT_CONFIG_GLOBAL: tmpGitConfig };
+
+  await setupLockfileSmokeBasic(proj, lockEnv, bareDir);
+  await setupLockfileSmokeAdvanced(proj, lockEnv);
+
+  console.log('harness: rac-lock.json all scenarios ok');
 }
 
 async function main() {
@@ -337,6 +606,7 @@ async function main() {
   const configTargetsRepo = path.join(tmpRoot, 'config-targets-repo');
 
   try {
+    await setupLockfileSmoke(tmpRoot);
     await setupPackOverrideScope(tmpRoot);
 
     await setupProjectScope(sampleRepo);

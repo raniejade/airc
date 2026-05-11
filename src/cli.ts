@@ -9,7 +9,7 @@ import { detectColorMode, renderDiff, renderDoctor, renderEmpty, renderInstall, 
 import { diff } from './core/diff.js';
 import { buildOverrideWarnings, doctor, initProject, install } from './core/install.js';
 import { addProjectPack, clearProjectPackOverride, listProjectPackOverrides, listProjectPacks, removeProjectPack, setProjectPackOverride } from './core/pack-config.js';
-import { loadPackOverrides } from './core/parsers.js';
+import { FrozenLockfileError, loadPackOverrides } from './core/parsers.js';
 import type { Kind, Scope, Target } from './core/types.js';
 import { uninstall } from './core/uninstall.js';
 import { splitCsv } from './core/util.js';
@@ -72,12 +72,20 @@ export function createProgram(): Command {
     .option('--check', 'verify generated outputs/manifests are up to date without writing')
     .option('--force', 'override unmanaged files')
     .option('--refresh-packs', 'force re-clone of shared pack caches before installing')
+    .option('--frozen-lockfile', 'error (exit code 2) if rac-lock.json would change')
     .option('--scope <scope>', 'project|user (default project)')
     .option('--no-merge', 'bypass surgical merge of shared config files; write generated content wholesale')
-    .action(async (opts: { targets?: string; kind?: string; dryRun?: boolean; summary?: boolean; clean?: boolean; check?: boolean; force?: boolean; refreshPacks?: boolean; scope?: string; noMerge?: boolean }) => {
+    .action(async (opts: { targets?: string; kind?: string; dryRun?: boolean; summary?: boolean; clean?: boolean; check?: boolean; force?: boolean; refreshPacks?: boolean; frozenLockfile?: boolean; scope?: string; noMerge?: boolean }) => {
       const cwd = process.cwd();
       const scope = normalizeScope(opts.scope);
       const mode = detectColorMode({ plainFlag: !!(program.opts() as { plain?: boolean }).plain });
+
+      if (opts.refreshPacks && opts.frozenLockfile) {
+        process.stderr.write('cannot combine --refresh-packs with --frozen-lockfile\n');
+        process.exitCode = 2;
+        return;
+      }
+
       const spinner = startSpinner('Installing…', mode);
       try {
         // Emit WARN per active pack override before install/diff output (project scope only)
@@ -96,6 +104,7 @@ export function createProgram(): Command {
             targets: normalizeTargets(opts.targets),
             kinds: normalizeKinds(opts.kind),
             refreshPacks: !!opts.refreshPacks,
+            frozen: !!opts.frozenLockfile,
             scope,
             noMerge: opts.noMerge ? true : undefined,
             detectDrift: true,
@@ -117,6 +126,7 @@ export function createProgram(): Command {
             check: !!opts.check,
             force: !!opts.force,
             refreshPacks: !!opts.refreshPacks,
+            frozen: !!opts.frozenLockfile,
             scope,
             noMerge: opts.noMerge ? true : undefined,
             cwd,
@@ -132,6 +142,11 @@ export function createProgram(): Command {
         }
       } catch (err) {
         spinner.stop();
+        if (err instanceof FrozenLockfileError) {
+          process.stderr.write(`${err.message}\n`);
+          process.exitCode = 2;
+          return;
+        }
         throw err;
       }
     });
@@ -142,12 +157,20 @@ export function createProgram(): Command {
     .option('--kind <kinds>', 'comma-separated: agent,skill,mcp,rule,config')
     .option('--scope <scope>', 'project|user (default project)')
     .option('--refresh-packs', 'force re-clone of shared pack caches before diffing')
+    .option('--frozen-lockfile', 'error (exit code 2) if rac-lock.json would change')
     .option('--no-merge', 'bypass surgical merge of shared config files')
     .option('--summary', 'suppress per-file unified diffs; show path/count summary only')
     .option('--no-drift', 'skip drift detection section')
-    .action(async (opts: { targets?: string; kind?: string; scope?: string; refreshPacks?: boolean; noMerge?: boolean; summary?: boolean; drift?: boolean }) => {
+    .action(async (opts: { targets?: string; kind?: string; scope?: string; refreshPacks?: boolean; frozenLockfile?: boolean; noMerge?: boolean; summary?: boolean; drift?: boolean }) => {
       const cwd = process.cwd();
       const mode = detectColorMode({ plainFlag: !!(program.opts() as { plain?: boolean }).plain });
+
+      if (opts.refreshPacks && opts.frozenLockfile) {
+        process.stderr.write('cannot combine --refresh-packs with --frozen-lockfile\n');
+        process.exitCode = 2;
+        return;
+      }
+
       const spinner = startSpinner('Computing diff…', mode);
       try {
         const result = await diff({
@@ -156,6 +179,7 @@ export function createProgram(): Command {
           kinds: normalizeKinds(opts.kind),
           scope: normalizeScope(opts.scope),
           refreshPacks: !!opts.refreshPacks,
+          frozen: !!opts.frozenLockfile,
           noMerge: opts.noMerge ? true : undefined,
           detectDrift: opts.drift !== false,
         });
@@ -163,6 +187,11 @@ export function createProgram(): Command {
         process.stdout.write(renderDiff(result, { cwd, mode, summary: !!opts.summary }));
       } catch (err) {
         spinner.stop();
+        if (err instanceof FrozenLockfileError) {
+          process.stderr.write(`${err.message}\n`);
+          process.exitCode = 2;
+          return;
+        }
         throw err;
       }
     });
@@ -242,9 +271,10 @@ export function createProgram(): Command {
     .option('--targets <targets>', 'comma-separated: claude,codex,opencode')
     .option('--kind <kinds>', 'comma-separated: agent,skill,mcp,rule,config')
     .option('--scope <scope>', 'project|user (default project)')
-    .action(async (opts: { targets?: string; kind?: string; scope?: string }) => {
+    .option('--frozen-lockfile', 'error if any pack in config.toml lacks a lockfile entry')
+    .action(async (opts: { targets?: string; kind?: string; scope?: string; frozenLockfile?: boolean }) => {
       const mode = detectColorMode({ plainFlag: !!(program.opts() as { plain?: boolean }).plain });
-      const warnings = await doctor(process.cwd(), normalizeTargets(opts.targets), normalizeKinds(opts.kind), normalizeScope(opts.scope));
+      const warnings = await doctor(process.cwd(), normalizeTargets(opts.targets), normalizeKinds(opts.kind), normalizeScope(opts.scope), { frozen: !!opts.frozenLockfile });
       process.stdout.write(renderDoctor(warnings, mode));
       if (warnings.some((w) => w.severity === 'error')) process.exit(1);
     });

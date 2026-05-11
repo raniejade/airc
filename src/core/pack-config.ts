@@ -3,8 +3,9 @@ import path from 'node:path';
 
 import { parse } from 'smol-toml';
 
-import { loadPackOverrides, loadProjectPackConfig, validatePackSpec } from './parsers.js';
-import type { PackOverride, PackSpec } from './types.js';
+import { loadPackLock, writePackLock } from './pack-lock.js';
+import { ensureSharedPack, loadPackOverrides, loadProjectPackConfig, validatePackSpec, type GitRunner } from './parsers.js';
+import type { PackLockEntry, PackLockFile, PackOverride, PackSpec } from './types.js';
 
 function configPathFor(cwd: string): string {
   return path.join(cwd, '.rac', 'config.toml');
@@ -90,7 +91,11 @@ export async function listProjectPacks(cwd: string): Promise<PackSpec[]> {
   return config.packs;
 }
 
-export async function addProjectPack(cwd: string, spec: PackSpec): Promise<void> {
+export async function addProjectPack(
+  cwd: string,
+  spec: PackSpec,
+  opts: { gitRunner?: GitRunner } = {},
+): Promise<void> {
   const configPath = await assertConfigExists(cwd);
   validatePackSpec(spec);
 
@@ -102,6 +107,24 @@ export async function addProjectPack(cwd: string, spec: PackSpec): Promise<void>
   const spacer = raw.length === 0 || raw.endsWith('\n\n') ? '' : '\n';
   raw += `${spacer}[[packs]]\nid = ${tomlString(spec.id)}\nrepo = ${tomlString(spec.repo)}\nref = ${tomlString(spec.ref)}\n`;
   await writeFile(configPath, raw, 'utf8');
+
+  const projectRoot = path.join(cwd, '.rac');
+  const runtime = await ensureSharedPack(spec, { gitRunner: opts.gitRunner });
+
+  const existingLock = await loadPackLock(projectRoot);
+  const newEntry: PackLockEntry = {
+    id: spec.id,
+    repo: spec.repo,
+    ref: spec.ref,
+    resolved: runtime.resolvedSha!, // ensureSharedPack always sets this; non-null assertion is safe per M2 validation
+  };
+  const newPacks = existingLock ? [...existingLock.packs] : [];
+  // Replace any prior entry matching this id; otherwise append:
+  const existingIdx = newPacks.findIndex((p) => p.id === spec.id);
+  if (existingIdx >= 0) newPacks.splice(existingIdx, 1, newEntry);
+  else newPacks.push(newEntry);
+  const newLock: PackLockFile = { version: 1, packs: newPacks };
+  await writePackLock(projectRoot, newLock);
 }
 
 export async function removeProjectPack(cwd: string, packId: string): Promise<void> {
@@ -116,6 +139,16 @@ export async function removeProjectPack(cwd: string, packId: string): Promise<vo
 
   const next = removeBlockWithLocalSeparator(raw, target.start, target.end);
   await writeFile(configPath, next, 'utf8');
+
+  const projectRoot = path.join(cwd, '.rac');
+  const existingLock = await loadPackLock(projectRoot);
+  if (existingLock) {
+    const filtered = existingLock.packs.filter((p) => p.id !== packId);
+    if (filtered.length !== existingLock.packs.length) {
+      const newLock: PackLockFile = { version: 1, packs: filtered };
+      await writePackLock(projectRoot, newLock);
+    }
+  }
 }
 
 const LOCAL_CONFIG_FILE = 'config.local.toml';

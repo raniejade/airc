@@ -19,7 +19,7 @@ describe('ensureSharedPack', () => {
     try {
       const fetchError = new Error("git fetch --force --tags origin badref failed: fatal: couldn't find remote ref badref");
       const runner: GitRunner = vi.fn()
-        .mockImplementationOnce(async () => { /* clone succeeds */ })
+        .mockImplementationOnce(async () => ({ stdout: '' }) /* clone succeeds */)
         .mockImplementationOnce(async () => { throw fetchError; });
 
       await expect(
@@ -85,6 +85,7 @@ describe('ensureSharedPack', () => {
           cloneCalls.push(args);
         }
         // All git calls succeed
+        return { stdout: '' };
       });
 
       // With refresh: true, clone should be called even though .git exists
@@ -98,6 +99,144 @@ describe('ensureSharedPack', () => {
 
       expect(cloneCalls.length).toBeGreaterThanOrEqual(1);
       expect(cloneCalls[0][0]).toBe('clone');
+    } finally {
+      process.env.RAC_CACHE_DIR = originalCacheDir;
+    }
+  });
+
+  it('locked mode: fetches and checks out the given SHA, skips FETCH_HEAD', async () => {
+    const cacheDir = await makeTmp();
+    const originalCacheDir = process.env.RAC_CACHE_DIR;
+    process.env.RAC_CACHE_DIR = cacheDir;
+
+    try {
+      const { mkdir, writeFile } = await import('node:fs/promises');
+      const key = `github:owner/repo@main`;
+      const keyHash = Buffer.from(key).toString('base64url');
+      const repoDir = path.join(cacheDir, 'packs', keyHash);
+      await mkdir(path.join(repoDir, '.git'), { recursive: true });
+      await mkdir(path.join(repoDir, '.rac'), { recursive: true });
+      await writeFile(path.join(repoDir, '.rac/config.toml'), '', 'utf8');
+
+      const lockedSha = 'a'.repeat(40);
+      const calls: string[][] = [];
+      const runner: GitRunner = vi.fn().mockImplementation(async (args: string[]) => {
+        calls.push(args);
+        return { stdout: '' };
+      });
+
+      const result = await ensureSharedPack(validSpec, { gitRunner: runner, lockedSha });
+
+      // Should have called fetch with sha and checkout --detach sha
+      const fetchCall = calls.find((a) => a[0] === 'fetch');
+      expect(fetchCall).toEqual(['fetch', '--force', '--tags', 'origin', lockedSha]);
+
+      const checkoutCall = calls.find((a) => a[0] === 'checkout');
+      expect(checkoutCall).toEqual(['checkout', '--detach', lockedSha]);
+
+      // No FETCH_HEAD calls
+      const fetchHeadCall = calls.find((a) => a.includes('FETCH_HEAD'));
+      expect(fetchHeadCall).toBeUndefined();
+
+      // No rev-parse calls
+      const revParseCall = calls.find((a) => a[0] === 'rev-parse');
+      expect(revParseCall).toBeUndefined();
+
+      // resolvedSha should be the lockedSha
+      expect(result.resolvedSha).toBe(lockedSha);
+    } finally {
+      process.env.RAC_CACHE_DIR = originalCacheDir;
+    }
+  });
+
+  it('resolving mode: captures SHA from rev-parse HEAD after FETCH_HEAD checkout', async () => {
+    const cacheDir = await makeTmp();
+    const originalCacheDir = process.env.RAC_CACHE_DIR;
+    process.env.RAC_CACHE_DIR = cacheDir;
+
+    try {
+      const { mkdir, writeFile } = await import('node:fs/promises');
+      const key = `github:owner/repo@main`;
+      const keyHash = Buffer.from(key).toString('base64url');
+      const repoDir = path.join(cacheDir, 'packs', keyHash);
+      await mkdir(path.join(repoDir, '.git'), { recursive: true });
+      await mkdir(path.join(repoDir, '.rac'), { recursive: true });
+      await writeFile(path.join(repoDir, '.rac/config.toml'), '', 'utf8');
+
+      const expectedSha = 'b'.repeat(40);
+      const calls: string[][] = [];
+      const runner: GitRunner = vi.fn().mockImplementation(async (args: string[]) => {
+        calls.push(args);
+        if (args[0] === 'rev-parse') {
+          return { stdout: `${expectedSha}\n` }; // trailing newline to verify trim
+        }
+        return { stdout: '' };
+      });
+
+      const result = await ensureSharedPack(validSpec, { gitRunner: runner });
+
+      // Call order: fetch origin <ref> → checkout --detach FETCH_HEAD → rev-parse HEAD
+      expect(calls[0]).toEqual(['fetch', '--force', '--tags', 'origin', 'main']);
+      expect(calls[1]).toEqual(['checkout', '--detach', 'FETCH_HEAD']);
+      expect(calls[2]).toEqual(['rev-parse', 'HEAD']);
+
+      // resolvedSha should be trimmed
+      expect(result.resolvedSha).toBe(expectedSha);
+    } finally {
+      process.env.RAC_CACHE_DIR = originalCacheDir;
+    }
+  });
+
+  it('locked mode with refresh: true: wipes cache and fetches SHA, not FETCH_HEAD', async () => {
+    const cacheDir = await makeTmp();
+    const originalCacheDir = process.env.RAC_CACHE_DIR;
+    process.env.RAC_CACHE_DIR = cacheDir;
+
+    try {
+      const { mkdir, writeFile } = await import('node:fs/promises');
+      const key = `github:owner/repo@main`;
+      const keyHash = Buffer.from(key).toString('base64url');
+      const repoDir = path.join(cacheDir, 'packs', keyHash);
+      // Pre-populate the cache directory
+      await mkdir(path.join(repoDir, '.git'), { recursive: true });
+      await mkdir(path.join(repoDir, '.rac'), { recursive: true });
+      await writeFile(path.join(repoDir, '.rac/config.toml'), '', 'utf8');
+
+      const lockedSha = 'c'.repeat(40);
+      const calls: string[][] = [];
+      const runner: GitRunner = vi.fn().mockImplementation(async (args: string[]) => {
+        calls.push(args);
+        // When clone is called, recreate the pack directory structure (simulating a real clone)
+        if (args[0] === 'clone') {
+          const cloneTarget = args[2]; // clone <url> <target-dir>
+          await mkdir(path.join(cloneTarget, '.git'), { recursive: true });
+          await mkdir(path.join(cloneTarget, '.rac'), { recursive: true });
+          await writeFile(path.join(cloneTarget, '.rac/config.toml'), '', 'utf8');
+        }
+        return { stdout: '' };
+      });
+
+      // With refresh: true and lockedSha, it wipes cache, clones, then uses locked sha
+      const result = await ensureSharedPack(validSpec, { refresh: true, gitRunner: runner, lockedSha });
+
+      // Clone must have happened (because refresh wiped the cache)
+      const cloneCall = calls.find((a) => a[0] === 'clone');
+      expect(cloneCall).toBeDefined();
+      expect(cloneCall?.[0]).toBe('clone');
+
+      // Fetch with sha (not ref)
+      const fetchCall = calls.find((a) => a[0] === 'fetch');
+      expect(fetchCall).toEqual(['fetch', '--force', '--tags', 'origin', lockedSha]);
+
+      // Checkout with sha (not FETCH_HEAD)
+      const checkoutCall = calls.find((a) => a[0] === 'checkout');
+      expect(checkoutCall).toEqual(['checkout', '--detach', lockedSha]);
+
+      // No FETCH_HEAD calls
+      const fetchHeadCall = calls.find((a) => a.includes('FETCH_HEAD'));
+      expect(fetchHeadCall).toBeUndefined();
+
+      expect(result.resolvedSha).toBe(lockedSha);
     } finally {
       process.env.RAC_CACHE_DIR = originalCacheDir;
     }

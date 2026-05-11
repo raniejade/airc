@@ -111,6 +111,7 @@ export async function diff(options: DiffOptions): Promise<DiffResult> {
     targets: options.targets,
     kinds: options.kinds,
     refreshPacks: options.refreshPacks,
+    frozen: options.frozen,
     noMerge: options.noMerge,
     dryRun: true,
     clean: false,

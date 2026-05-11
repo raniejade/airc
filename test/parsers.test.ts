@@ -11,74 +11,111 @@ import { cleanupTmpDirs, makeTmp, runCliInProcess } from './helpers.js';
 
 afterEach(cleanupTmpDirs);
 
+/**
+ * Build a minimal GitRunner suitable for tests that call addProjectPack.
+ * Intercepts 'clone' to create the required .git and .rac/config.toml so
+ * ensureSharedPack can complete without network access. Returns a fixed SHA
+ * for 'rev-parse HEAD'.
+ */
+function makeTestGitRunner(): GitRunner {
+  return vi.fn(async (args: string[]) => {
+    if (args[0] === 'clone') {
+      const target = args[2];
+      await mkdir(path.join(target, '.git'), { recursive: true });
+      await mkdir(path.join(target, '.rac'), { recursive: true });
+      await writeFile(path.join(target, '.rac/config.toml'), '', 'utf8');
+    }
+    if (args[0] === 'rev-parse') return { stdout: `${'0'.repeat(40)}\n` };
+    return { stdout: '' };
+  }) as unknown as GitRunner;
+}
+
 describe('parsers', () => {
   it('pack config add/list/remove enforces validation and preserves unrelated content', async () => {
     const root = await makeTmp();
-    await mkdir(path.join(root, '.rac'), { recursive: true });
+    const cacheDir = await makeTmp();
+    const origCache = process.env.RAC_CACHE_DIR;
+    process.env.RAC_CACHE_DIR = cacheDir;
+    const gitRunner = makeTestGitRunner();
 
-    await expect(listProjectPacks(root)).rejects.toThrow('missing required config');
-    await expect(addProjectPack(root, { id: 'a', repo: 'github:owner/repo', ref: 'main' })).rejects.toThrow('missing required config');
-    await expect(removeProjectPack(root, 'a')).rejects.toThrow('missing required config');
+    try {
+      await mkdir(path.join(root, '.rac'), { recursive: true });
 
-    await writeFile(path.join(root, '.rac/config.toml'), 'title = "demo"\n', 'utf8');
+      await expect(listProjectPacks(root)).rejects.toThrow('missing required config');
+      await expect(addProjectPack(root, { id: 'a', repo: 'github:owner/repo', ref: 'main' })).rejects.toThrow('missing required config');
+      await expect(removeProjectPack(root, 'a')).rejects.toThrow('missing required config');
 
-    await expect(addProjectPack(root, { id: 'bad id', repo: 'github:owner/repo', ref: 'main' })).rejects.toThrow('invalid pack id');
-    await expect(addProjectPack(root, { id: 'project', repo: 'github:owner/repo', ref: 'main' })).rejects.toThrow('project is reserved');
-    await expect(addProjectPack(root, { id: 'good', repo: 'https://github.com/owner/repo', ref: 'main' })).rejects.toThrow('invalid pack repo');
-    await expect(addProjectPack(root, { id: 'good', repo: 'github:owner/repo', ref: 'bad ref' })).rejects.toThrow('invalid pack ref');
+      await writeFile(path.join(root, '.rac/config.toml'), 'title = "demo"\n', 'utf8');
 
-    const before = await readFile(path.join(root, '.rac/config.toml'), 'utf8');
-    await addProjectPack(root, { id: 'alpha', repo: 'github:owner/alpha', ref: 'main' });
-    const afterOne = await readFile(path.join(root, '.rac/config.toml'), 'utf8');
-    expect(afterOne.startsWith(before)).toBe(true);
-    expect(afterOne).toContain('[[packs]]\nid = "alpha"\nrepo = "github:owner/alpha"\nref = "main"\n');
+      await expect(addProjectPack(root, { id: 'bad id', repo: 'github:owner/repo', ref: 'main' })).rejects.toThrow('invalid pack id');
+      await expect(addProjectPack(root, { id: 'project', repo: 'github:owner/repo', ref: 'main' })).rejects.toThrow('project is reserved');
+      await expect(addProjectPack(root, { id: 'good', repo: 'https://github.com/owner/repo', ref: 'main' })).rejects.toThrow('invalid pack repo');
+      await expect(addProjectPack(root, { id: 'good', repo: 'github:owner/repo', ref: 'bad ref' })).rejects.toThrow('invalid pack ref');
 
-    await addProjectPack(root, { id: 'beta', repo: 'github:owner/beta', ref: 'v1' });
-    await expect(addProjectPack(root, { id: 'alpha', repo: 'github:owner/alpha', ref: 'main' })).rejects.toThrow('duplicate pack id');
+      const before = await readFile(path.join(root, '.rac/config.toml'), 'utf8');
+      await addProjectPack(root, { id: 'alpha', repo: 'github:owner/alpha', ref: 'main' }, { gitRunner });
+      const afterOne = await readFile(path.join(root, '.rac/config.toml'), 'utf8');
+      expect(afterOne.startsWith(before)).toBe(true);
+      expect(afterOne).toContain('[[packs]]\nid = "alpha"\nrepo = "github:owner/alpha"\nref = "main"\n');
 
-    const listed = await listProjectPacks(root);
-    expect(listed.map((pack) => `${pack.id} ${pack.repo} ${pack.ref}`)).toEqual([
-      'alpha github:owner/alpha main',
-      'beta github:owner/beta v1'
-    ]);
+      await addProjectPack(root, { id: 'beta', repo: 'github:owner/beta', ref: 'v1' }, { gitRunner });
+      await expect(addProjectPack(root, { id: 'alpha', repo: 'github:owner/alpha', ref: 'main' }, { gitRunner })).rejects.toThrow('duplicate pack id');
 
-    await expect(removeProjectPack(root, 'missing')).rejects.toThrow('pack not found');
-    await removeProjectPack(root, 'alpha');
-    const afterRemove = await readFile(path.join(root, '.rac/config.toml'), 'utf8');
-    expect(afterRemove).toContain('title = "demo"');
-    expect(afterRemove).not.toContain('id = "alpha"');
-    expect(afterRemove).toContain('id = "beta"');
-    expect((await listProjectPacks(root)).map((pack) => pack.id)).toEqual(['beta']);
+      const listed = await listProjectPacks(root);
+      expect(listed.map((pack) => `${pack.id} ${pack.repo} ${pack.ref}`)).toEqual([
+        'alpha github:owner/alpha main',
+        'beta github:owner/beta v1'
+      ]);
+
+      await expect(removeProjectPack(root, 'missing')).rejects.toThrow('pack not found');
+      await removeProjectPack(root, 'alpha');
+      const afterRemove = await readFile(path.join(root, '.rac/config.toml'), 'utf8');
+      expect(afterRemove).toContain('title = "demo"');
+      expect(afterRemove).not.toContain('id = "alpha"');
+      expect(afterRemove).toContain('id = "beta"');
+      expect((await listProjectPacks(root)).map((pack) => pack.id)).toEqual(['beta']);
+    } finally {
+      process.env.RAC_CACHE_DIR = origCache;
+    }
   });
 
   it('cli pack add/list/remove wiring handles required ref, list formatting, escaping, and errors', async () => {
     const root = await makeTmp();
-    await mkdir(path.join(root, '.rac'), { recursive: true });
-    await writeFile(path.join(root, '.rac/config.toml'), 'title = "demo"\r\n\r\n\r\n[other]\r\nvalue = "keep"\r\n', 'utf8');
+    const cacheDir = await makeTmp();
+    const origCache = process.env.RAC_CACHE_DIR;
+    process.env.RAC_CACHE_DIR = cacheDir;
+    const gitRunner = makeTestGitRunner();
 
-    // In-process: commander enforces --ref as required
-    const missingRef = await runCliInProcess(root, ['pack', 'add', 'alpha', 'github:owner/alpha']);
-    expect(missingRef.status).toBe(2);
-    expect(missingRef.stderr).toContain("required option '--ref <ref>'");
+    try {
+      await mkdir(path.join(root, '.rac'), { recursive: true });
+      await writeFile(path.join(root, '.rac/config.toml'), 'title = "demo"\r\n\r\n\r\n[other]\r\nvalue = "keep"\r\n', 'utf8');
 
-    // Direct: add with special chars, verify TOML state
-    await addProjectPack(root, { id: 'alpha', repo: 'github:owner/alpha', ref: 'tag"\\candidate' });
-    const parsed = parseToml(await readFile(path.join(root, '.rac/config.toml'), 'utf8')) as {
-      packs?: Array<{ id?: string; repo?: string; ref?: string }>;
-    };
-    expect(parsed.packs?.[0]).toEqual({
-      id: 'alpha',
-      repo: 'github:owner/alpha',
-      ref: 'tag"\\candidate'
-    });
+      // In-process: commander enforces --ref as required
+      const missingRef = await runCliInProcess(root, ['pack', 'add', 'alpha', 'github:owner/alpha']);
+      expect(missingRef.status).toBe(2);
+      expect(missingRef.stderr).toContain("required option '--ref <ref>'");
 
-    // In-process: verify CLI renders list correctly (empty then one-item formatting)
-    const listOne = await runCliInProcess(root, ['pack', 'list']);
-    expect(listOne.status).toBe(0);
-    expect(listOne.stdout).toBe('alpha  github:owner/alpha @ tag"\\candidate\n');
+      // Direct: add with special chars, verify TOML state
+      await addProjectPack(root, { id: 'alpha', repo: 'github:owner/alpha', ref: 'tag"\\candidate' }, { gitRunner });
+      const parsed = parseToml(await readFile(path.join(root, '.rac/config.toml'), 'utf8')) as {
+        packs?: Array<{ id?: string; repo?: string; ref?: string }>;
+      };
+      expect(parsed.packs?.[0]).toEqual({
+        id: 'alpha',
+        repo: 'github:owner/alpha',
+        ref: 'tag"\\candidate'
+      });
 
-    // Direct: removeProjectPack throws with expected message (exit-code mapping is generic)
-    await expect(removeProjectPack(root, 'missing')).rejects.toThrow('pack not found: missing');
+      // In-process: verify CLI renders list correctly (empty then one-item formatting)
+      const listOne = await runCliInProcess(root, ['pack', 'list']);
+      expect(listOne.status).toBe(0);
+      expect(listOne.stdout).toBe('alpha  github:owner/alpha @ tag"\\candidate\n');
+
+      // Direct: removeProjectPack throws with expected message (exit-code mapping is generic)
+      await expect(removeProjectPack(root, 'missing')).rejects.toThrow('pack not found: missing');
+    } finally {
+      process.env.RAC_CACHE_DIR = origCache;
+    }
   });
 
   it('cli pack remove matches whitespace/commented [[ packs ]] headers and preserves unrelated file fidelity', async () => {
@@ -337,16 +374,25 @@ describe('parsers', () => {
 
   it('pack-config: round-trip add then remove leaves no double-blank-line artifacts', async () => {
     const root = await makeTmp();
-    await mkdir(path.join(root, '.rac'), { recursive: true });
-    await writeFile(path.join(root, '.rac/config.toml'), 'title = "demo"\n', 'utf8');
+    const cacheDir = await makeTmp();
+    const origCache = process.env.RAC_CACHE_DIR;
+    process.env.RAC_CACHE_DIR = cacheDir;
+    const gitRunner = makeTestGitRunner();
 
-    await addProjectPack(root, { id: 'alpha', repo: 'github:owner/alpha', ref: 'main' });
-    await removeProjectPack(root, 'alpha');
+    try {
+      await mkdir(path.join(root, '.rac'), { recursive: true });
+      await writeFile(path.join(root, '.rac/config.toml'), 'title = "demo"\n', 'utf8');
 
-    const content = await readFile(path.join(root, '.rac/config.toml'), 'utf8');
-    expect(content).not.toContain('\n\n\n');
-    expect(content).toContain('title = "demo"');
-    expect(content).not.toContain('alpha');
+      await addProjectPack(root, { id: 'alpha', repo: 'github:owner/alpha', ref: 'main' }, { gitRunner });
+      await removeProjectPack(root, 'alpha');
+
+      const content = await readFile(path.join(root, '.rac/config.toml'), 'utf8');
+      expect(content).not.toContain('\n\n\n');
+      expect(content).toContain('title = "demo"');
+      expect(content).not.toContain('alpha');
+    } finally {
+      process.env.RAC_CACHE_DIR = origCache;
+    }
   });
 
   it('pack-config: TOML escape sequences in ref are decoded by smol-toml', async () => {
@@ -500,7 +546,9 @@ describe('resolvePacks with overrides', () => {
       const gitCalls: string[][] = [];
       const gitRunner: GitRunner = vi.fn().mockImplementation(async (args: string[]) => {
         gitCalls.push(args);
-        // fetch and checkout succeed silently
+        // rev-parse HEAD returns a plausible SHA; fetch and checkout succeed silently
+        if (args[0] === 'rev-parse') return { stdout: '0000000000000000000000000000000000000001\n' };
+        return { stdout: '' };
       });
 
       const result = await resolvePacks(project, { gitRunner });
@@ -543,7 +591,11 @@ describe('resolvePacks with overrides', () => {
       await mkdir(path.join(repoDir, '.rac'), { recursive: true });
       await writeFile(path.join(repoDir, '.rac/config.toml'), '', 'utf8');
 
-      const gitRunner: GitRunner = vi.fn().mockImplementation(async () => { /* success */ });
+      const gitRunner: GitRunner = vi.fn().mockImplementation(async (args: string[]) => {
+        // rev-parse HEAD returns a plausible SHA; other git calls succeed silently
+        if (args[0] === 'rev-parse') return { stdout: '0000000000000000000000000000000000000002\n' };
+        return { stdout: '' };
+      });
 
       const result = await resolvePacks(project, { gitRunner });
 

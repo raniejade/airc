@@ -7,8 +7,9 @@ import fg from 'fast-glob';
 import { parse } from 'smol-toml';
 import { z } from 'zod';
 
+import { findLockEntry, loadPackLock, writePackLock } from './pack-lock.js';
 import { parseSelector, pathsOverlap } from './selector.js';
-import type { AgentDef, McpDef, PackOverride, PackRuntime, PackSpec, RuleCommandItem, RuleDecision, RuleDef, SkillDef, Target, VendorConfigDef } from './types.js';
+import type { AgentDef, McpDef, PackLockEntry, PackLockFile, PackOverride, PackRuntime, PackSpec, RuleCommandItem, RuleDecision, RuleDef, SkillDef, Target, VendorConfigDef } from './types.js';
 import { asRecord, collectEnvVarsFromText, jsonPathBracketSelector, normalizeDefinitionId } from './util.js';
 
 const PACK_ID_RE = /^[A-Za-z0-9._-]+$/;
@@ -56,13 +57,15 @@ export function validatePackSpec(spec: PackSpec): void {
   if (!REF_RE.test(spec.ref)) throw new Error(`invalid pack ref: ${spec.ref}`);
 }
 
-export type GitRunner = (args: string[], cwd?: string) => Promise<void>;
+export type GitRunner = (args: string[], cwd?: string) => Promise<{ stdout: string }>;
 
 export function defaultGitRunner(): GitRunner {
   return async (args, cwd) => {
-    await new Promise<void>((resolve, reject) => {
+    return new Promise<{ stdout: string }>((resolve, reject) => {
       const child = spawn('git', args, { cwd, stdio: ['ignore', 'pipe', 'pipe'] });
+      let stdout = '';
       let stderr = '';
+      child.stdout?.on('data', (c) => { stdout += String(c); });
       child.stderr.on('data', (c) => { stderr += String(c); });
       child.on('error', (error) => {
         const asNodeErr = error as NodeJS.ErrnoException;
@@ -74,7 +77,7 @@ export function defaultGitRunner(): GitRunner {
       });
       child.on('close', (code) => {
         if (code === 0) {
-          resolve();
+          resolve({ stdout });
           return;
         }
         reject(new Error(`git ${args.join(' ')} failed${stderr ? `: ${stderr.trim()}` : ''}`));
@@ -85,7 +88,7 @@ export function defaultGitRunner(): GitRunner {
 
 export async function ensureSharedPack(
   spec: PackSpec,
-  opts: { refresh?: boolean; gitRunner?: GitRunner } = {},
+  opts: { refresh?: boolean; gitRunner?: GitRunner; lockedSha?: string } = {},
 ): Promise<PackRuntime> {
   const runGit = opts.gitRunner ?? defaultGitRunner();
   validatePackSpec(spec);
@@ -103,12 +106,24 @@ export async function ensureSharedPack(
     await runGit(['clone', gitUrl, repoDir]);
   }
 
-  await runGit(['fetch', '--force', '--tags', 'origin', spec.ref], repoDir);
-  await runGit(['checkout', '--detach', 'FETCH_HEAD'], repoDir);
+  let resolvedSha: string;
+  if (opts.lockedSha) {
+    await runGit(['fetch', '--force', '--tags', 'origin', opts.lockedSha], repoDir);
+    await runGit(['checkout', '--detach', opts.lockedSha], repoDir);
+    resolvedSha = opts.lockedSha;
+  } else {
+    await runGit(['fetch', '--force', '--tags', 'origin', spec.ref], repoDir);
+    await runGit(['checkout', '--detach', 'FETCH_HEAD'], repoDir);
+    const result = await runGit(['rev-parse', 'HEAD'], repoDir);
+    resolvedSha = result.stdout.trim();
+    if (!/^[0-9a-f]{40}$/.test(resolvedSha)) {
+      throw new Error(`unable to resolve pack '${spec.id}': git rev-parse HEAD returned ${JSON.stringify(resolvedSha)}`);
+    }
+  }
 
   const root = path.join(repoDir, '.rac');
   await loadSharedPackConfig(root);
-  return { id: spec.id, root, sourceRepo: spec.repo, sourceRef: spec.ref };
+  return { id: spec.id, root, sourceRepo: spec.repo, sourceRef: spec.ref, resolvedSha };
 }
 
 function mapId<T extends { id: string }>(items: T[], kind: string): void {
@@ -418,9 +433,23 @@ export async function ensureLocalPack(
   };
 }
 
+export class FrozenLockfileError extends Error {
+  readonly frozenLockfile = true as const;
+  constructor(message: string) {
+    super(message);
+    this.name = 'FrozenLockfileError';
+  }
+}
+
+function normalizeLockForCompare(lock: PackLockFile | null): string {
+  if (lock === null) return JSON.stringify({ version: 1, packs: [] });
+  const sorted = [...lock.packs].sort((a, b) => a.id.localeCompare(b.id));
+  return JSON.stringify({ version: 1, packs: sorted });
+}
+
 export async function resolvePacks(
   cwd: string,
-  opts: { refresh?: boolean; gitRunner?: GitRunner } = {},
+  opts: { refresh?: boolean; gitRunner?: GitRunner; frozen?: boolean; noWrite?: boolean } = {},
 ): Promise<PackRuntime[]> {
   const projectRoot = path.join(cwd, '.rac');
   const configPath = path.join(projectRoot, 'config.toml');
@@ -437,15 +466,84 @@ export async function resolvePacks(
     if (!found) throw new Error(`pack override target not found: ${ov.id} (no matching [[packs]] entry in ${configPath})`);
   }
 
+  const existingLock = await loadPackLock(projectRoot);
+
   const out: PackRuntime[] = [{ id: 'project', root: projectRoot }];
+  const newLockEntries: PackLockEntry[] = [];
+
   for (const spec of project.packs) {
     const ov = overrideMap.get(spec.id);
     if (ov) {
+      // Overridden packs are excluded from lockfile
       out.push(await ensureLocalPack(spec, ov.path, projectRoot));
     } else {
-      out.push(await ensureSharedPack(spec, opts));
+      let runtime: PackRuntime;
+      if (opts.refresh === true) {
+        // Resolving mode: always re-fetch
+        runtime = await ensureSharedPack(spec, { refresh: true, gitRunner: opts.gitRunner });
+      } else {
+        const lockEntry = findLockEntry(existingLock, spec);
+        if (lockEntry !== undefined) {
+          // Locked mode: use the pinned SHA
+          runtime = await ensureSharedPack(spec, { gitRunner: opts.gitRunner, lockedSha: lockEntry.resolved });
+        } else {
+          // Resolving mode: no lock entry yet
+          runtime = await ensureSharedPack(spec, { gitRunner: opts.gitRunner });
+        }
+      }
+      out.push(runtime);
+      if (runtime.resolvedSha !== undefined) {
+        newLockEntries.push({
+          id: spec.id,
+          repo: spec.repo,
+          ref: spec.ref,
+          resolved: runtime.resolvedSha,
+        });
+      }
     }
   }
+
+  const newLock: PackLockFile = { version: 1, packs: newLockEntries };
+  const lockChanged = normalizeLockForCompare(existingLock) !== normalizeLockForCompare(newLock);
+
+  if (opts.frozen === true && lockChanged) {
+    if (opts.noWrite === true) {
+      // noWrite suppresses both the throw and the write — doctor handles reporting itself
+    } else {
+      // Build violation messages
+      const violations: string[] = [];
+
+      for (const entry of newLockEntries) {
+        const existingEntry = existingLock?.packs.find(
+          (e) => e.id === entry.id && e.repo === entry.repo && e.ref === entry.ref
+        );
+        if (existingEntry === undefined) {
+          violations.push(
+            `pack '${entry.id}' has no lockfile entry; run 'rac install' without --frozen-lockfile to create one`
+          );
+        } else if (existingEntry.resolved !== entry.resolved) {
+          violations.push(
+            `pack '${entry.id}' is locked to ${existingEntry.resolved} but config.toml ref '${entry.ref}' has moved upstream; run 'rac install --refresh-packs' to update`
+          );
+        }
+      }
+
+      // Also check if entries were removed from config (stale entries in lockfile)
+      // Per spec: stale entries — do not throw for them in frozen mode, just don't write
+      // (only violations from new/changed entries are reported)
+
+      if (violations.length > 0) {
+        throw new FrozenLockfileError(`--frozen-lockfile:\n${violations.join('\n')}`);
+      }
+      // If we get here, the only change is stale entries (removed packs) — don't write, don't throw
+    }
+  } else if (opts.frozen !== true && lockChanged && opts.noWrite !== true && newLockEntries.length > 0) {
+    await writePackLock(projectRoot, newLock);
+  } else if (opts.frozen !== true && lockChanged && opts.noWrite !== true && newLockEntries.length === 0 && existingLock !== null) {
+    // All packs removed from config — write empty lockfile to clean up stale entries
+    await writePackLock(projectRoot, newLock);
+  }
+
   return out;
 }
 

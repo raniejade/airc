@@ -106,6 +106,7 @@ export type InstallOptions = {
   check?: boolean;
   force?: boolean;
   refreshPacks?: boolean;
+  frozen?: boolean;
   cwd: string;
   scope?: Scope;
   noMerge?: boolean;
@@ -146,7 +147,20 @@ export type PackRuntime = {
   root: string;
   sourceRepo?: string;
   sourceRef?: string;
+  resolvedSha?: string;
   override?: { path: string };
+};
+
+export type PackLockEntry = {
+  id: string;
+  repo: string;
+  ref: string;
+  resolved: string; // 40-char hex SHA
+};
+
+export type PackLockFile = {
+  version: 1;
+  packs: PackLockEntry[];
 };
 
 export type UninstallOptions = {
@@ -176,6 +190,7 @@ export type DiffOptions = {
   targets?: Target[];
   kinds: Kind[];
   refreshPacks?: boolean;
+  frozen?: boolean;
   noMerge?: boolean;
   detectDrift?: boolean; // default true
 };
