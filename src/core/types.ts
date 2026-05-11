@@ -146,7 +146,20 @@ export type PackRuntime = {
   root: string;
   sourceRepo?: string;
   sourceRef?: string;
+  resolvedSha?: string;
   override?: { path: string };
+};
+
+export type PackLockEntry = {
+  id: string;
+  repo: string;
+  ref: string;
+  resolved: string; // 40-char hex SHA
+};
+
+export type PackLockFile = {
+  version: 1;
+  packs: PackLockEntry[];
 };
 
 export type UninstallOptions = {
