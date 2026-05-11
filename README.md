@@ -64,6 +64,8 @@ npx @raniejade/rac install --refresh-packs --dry-run
 
 Pack commands edit the current project's `.rac/config.toml`.
 
+`rac install` creates `.rac/rac-lock.json` (committed alongside `config.toml`) that pins each pack to its resolved commit SHA. Subsequent installs on any machine check out the locked SHA rather than re-resolving the floating `ref`, so two developers and a CI job installing the same project always produce identical outputs. Use `--refresh-packs` to re-resolve refs and rewrite the lockfile. Use `--frozen-lockfile` (exit code 2 if the lockfile would change) in CI to gate on unreviewed lockfile drift. Pack overrides skip the lockfile entirely. See [Lockfile](docs/configuration.md#lockfile-rac-lockjson) for full details.
+
 For iterating on a pack locally, see [Local Pack Overrides](docs/configuration.md#local-pack-overrides) — a developer-only redirect via `.rac/config.local.toml`.
 
 ## Docs

@@ -9,7 +9,7 @@ import { parse as parseToml } from 'smol-toml';
 
 import { checkClaudeProject, checkClaudeUser } from './harness/claude.mjs';
 import { checkCodexProject, checkCodexUser } from './harness/codex.mjs';
-import { assert, makeRunCli } from './harness/lib.mjs';
+import { assert, makeRunCli, spawnCapture } from './harness/lib.mjs';
 import { checkOpenCodeProject, checkOpenCodeUser } from './harness/opencode.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -289,6 +289,36 @@ async function setupUserScope(tmpRoot, { suffix = '', noMerge = false, preSeed =
   return { userHome, xdgConfig, cwd };
 }
 
+/**
+ * Create a minimal local bare git repo that looks like a valid pack remote.
+ * Returns the file:// URL for the bare repo.
+ */
+async function setupLocalBarePackRepo(dir) {
+  await mkdir(dir, { recursive: true });
+
+  // Init a regular repo, add .rac/config.toml, commit, then bare-clone it.
+  const src = path.join(dir, 'src');
+  await mkdir(path.join(src, '.rac'), { recursive: true });
+  await writeFile(path.join(src, '.rac', 'config.toml'), '', 'utf8');
+
+  const gitEnv = {
+    ...process.env,
+    GIT_AUTHOR_NAME: 'Harness',
+    GIT_AUTHOR_EMAIL: 'harness@rac.test',
+    GIT_COMMITTER_NAME: 'Harness',
+    GIT_COMMITTER_EMAIL: 'harness@rac.test',
+  };
+  const git = (args, cwd) => spawnCapture('git', args, cwd, gitEnv);
+  await git(['init', '-b', 'main', src], dir);
+  await git(['add', '.'], src);
+  await git(['commit', '-m', 'init'], src);
+
+  const bareDir = path.join(dir, 'bare.git');
+  await git(['clone', '--bare', src, bareDir], dir);
+
+  return `file://${bareDir}`;
+}
+
 async function setupPackOverrideScope(tmpRoot) {
   const proj = path.join(tmpRoot, 'override-project');
   const pack = path.join(tmpRoot, 'override-local-pack');
@@ -307,7 +337,20 @@ async function setupPackOverrideScope(tmpRoot) {
     'utf8'
   );
   await writeFile(path.join(pack, '.rac', 'agents', 'override-agent.instructions.md'), 'x', 'utf8');
-  await runCli(proj, ['pack', 'add', 'demo', 'github:smoke/demo', '--ref', 'main']);
+
+  // Set up a local bare git repo and redirect the github: URL to it so
+  // `pack add` can clone without network access.
+  const bareRepoDir = path.join(tmpRoot, 'override-bare-pack');
+  const bareUrl = await setupLocalBarePackRepo(bareRepoDir);
+  const tmpGitConfig = path.join(tmpRoot, 'override-gitconfig');
+  await writeFile(
+    tmpGitConfig,
+    `[url "${bareUrl}"]\n\tinsteadOf = https://github.com/smoke/demo.git\n`,
+    'utf8'
+  );
+  const overrideEnv = { ...process.env, GIT_CONFIG_GLOBAL: tmpGitConfig };
+
+  await runCli(proj, ['pack', 'add', 'demo', 'github:smoke/demo', '--ref', 'main'], overrideEnv);
   await runCli(proj, ['pack', 'override', 'demo', pack]);
   const localConfig = await readFile(path.join(proj, '.rac', 'config.local.toml'), 'utf8');
   assert(localConfig.includes('id = "demo"'), `config.local.toml missing demo id: ${localConfig}`);
@@ -321,6 +364,47 @@ async function setupPackOverrideScope(tmpRoot) {
   await stat(path.join(proj, '.claude', 'agents', 'override-agent.md'));
   await runCli(proj, ['pack', 'override', 'demo', '--clear']);
   await assertAbsent(path.join(proj, '.rac', 'config.local.toml'), '.rac/config.local.toml after clear');
+}
+
+/**
+ * Smoke test for rac-lock.json: creates a project with a local-git-backed pack,
+ * runs rac install, and asserts the lockfile was written.
+ */
+async function setupLockfileSmoke(tmpRoot) {
+  const proj = path.join(tmpRoot, 'lockfile-project');
+  await mkdir(proj, { recursive: true });
+
+  // Create a local bare repo to act as the pack remote.
+  const bareRepoDir = path.join(tmpRoot, 'lockfile-bare-pack');
+  const bareUrl = await setupLocalBarePackRepo(bareRepoDir);
+  const tmpGitConfig = path.join(tmpRoot, 'lockfile-gitconfig');
+  await writeFile(
+    tmpGitConfig,
+    `[url "${bareUrl}"]\n\tinsteadOf = https://github.com/smoke/lockfile-pack.git\n`,
+    'utf8'
+  );
+  const lockEnv = { ...process.env, GIT_CONFIG_GLOBAL: tmpGitConfig };
+
+  await runCli(proj, ['init', '--empty'], lockEnv);
+
+  // Add the pack (this will resolve + write the lockfile entry via pack add).
+  await runCli(proj, ['pack', 'add', 'lockfile-pack', 'github:smoke/lockfile-pack', '--ref', 'main'], lockEnv);
+
+  // Lockfile should already exist after pack add.
+  await stat(path.join(proj, '.rac', 'rac-lock.json'));
+  const lockRaw = await readFile(path.join(proj, '.rac', 'rac-lock.json'), 'utf8');
+  const lock = JSON.parse(lockRaw);
+  assert(lock.version === 1, `rac-lock.json: expected version 1, got ${lock.version}`);
+  assert(Array.isArray(lock.packs) && lock.packs.length === 1, `rac-lock.json: expected 1 pack entry`);
+  assert(lock.packs[0].id === 'lockfile-pack', `rac-lock.json: wrong pack id`);
+  assert(/^[0-9a-f]{40}$/.test(lock.packs[0].resolved), `rac-lock.json: resolved is not a 40-char SHA: ${lock.packs[0].resolved}`);
+
+  // rac install should also succeed and keep the lockfile intact.
+  await runCli(proj, ['install', '--targets', 'codex'], lockEnv);
+
+  // The lockfile must still be present after install.
+  await stat(path.join(proj, '.rac', 'rac-lock.json'));
+  console.log('harness: rac-lock.json lockfile smoke ok');
 }
 
 async function main() {
@@ -337,6 +421,7 @@ async function main() {
   const configTargetsRepo = path.join(tmpRoot, 'config-targets-repo');
 
   try {
+    await setupLockfileSmoke(tmpRoot);
     await setupPackOverrideScope(tmpRoot);
 
     await setupProjectScope(sampleRepo);

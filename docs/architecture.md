@@ -29,7 +29,7 @@ Responsibilities:
 
 - Resolve active packs before parsing (project + configured shared packs)
 - Resolve `github:owner/repo` to `https://github.com/owner/repo.git`
-- Fetch/checkout shared refs with system `git` into RAC cache
+- Fetch/checkout shared refs with system `git` into RAC cache; SHA pinning happens here — the lockfile records the resolved SHA for each pack, and subsequent runs check out the locked SHA via `git fetch <sha>` + `git checkout --detach <sha>` instead of re-resolving the floating ref
 - Discover files with deterministic glob patterns
 - Parse and validate schema (`zod`)
 - Enforce structural constraints (duplicate IDs, MCP transport exclusivity, skill frontmatter boundaries)
