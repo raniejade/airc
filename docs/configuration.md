@@ -264,9 +264,11 @@ Rules:
 `rac doctor` emits one `WARN`-severity entry per active override. `rac install` emits the same warning before any diff or install output. Both still exit 0 — overrides are intentional, just risky to forget.
 
 ```
-WARN  pack override active: platform-rules → ../platform-pack
-       remove via `rac pack override --clear platform-rules` before publishing
+WARN  pack override active: platform-rules → /Users/dev/work/platform-pack
+      hint: remove via `rac pack override --clear platform-rules` before publishing
 ```
+
+The arrow shows the resolved absolute path, regardless of whether `path` is configured as a relative or absolute string in `config.local.toml`.
 
 ### `--refresh-packs`
 

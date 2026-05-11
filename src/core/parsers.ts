@@ -432,10 +432,9 @@ export async function resolvePacks(
   const overrideMap = new Map<string, PackOverride>();
   for (const ov of overrides) overrideMap.set(ov.id, ov);
 
-  const localConfigPath = path.join(projectRoot, 'config.local.toml');
   for (const ov of overrides) {
     const found = project.packs.some((p) => p.id === ov.id);
-    if (!found) throw new Error(`pack override target not found: ${ov.id} (no matching [[packs]] entry in ${localConfigPath})`);
+    if (!found) throw new Error(`pack override target not found: ${ov.id} (no matching [[packs]] entry in ${configPath})`);
   }
 
   const out: PackRuntime[] = [{ id: 'project', root: projectRoot }];
