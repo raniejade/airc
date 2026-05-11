@@ -106,6 +106,7 @@ export type InstallOptions = {
   check?: boolean;
   force?: boolean;
   refreshPacks?: boolean;
+  frozen?: boolean;
   cwd: string;
   scope?: Scope;
   noMerge?: boolean;
@@ -189,6 +190,7 @@ export type DiffOptions = {
   targets?: Target[];
   kinds: Kind[];
   refreshPacks?: boolean;
+  frozen?: boolean;
   noMerge?: boolean;
   detectDrift?: boolean; // default true
 };

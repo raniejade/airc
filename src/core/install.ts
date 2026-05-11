@@ -269,7 +269,7 @@ export async function computeInstallPlan(options: InstallOptions): Promise<Compu
   const cwdForPacks = scope === 'user'
     ? (process.env.RAC_HOME?.trim() || os.homedir())
     : options.cwd;
-  const packs = await resolvePacks(cwdForPacks, { refresh: options.refreshPacks });
+  const packs = await resolvePacks(cwdForPacks, { refresh: options.refreshPacks, frozen: options.frozen });
   const parsedAgents = [] as Awaited<ReturnType<typeof loadAgents>>;
   const parsedSkills = [] as Awaited<ReturnType<typeof loadSkills>>;
   const parsedMcps = [] as Awaited<ReturnType<typeof loadMcps>>;
