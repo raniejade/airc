@@ -23,7 +23,7 @@ export function renderWarnings(warnings: ConfigWarningView[], mode: ColorMode): 
   for (const w of warnings) {
     lines.push(`  ${badge(w.severity, mode)}  ${s.gray(w.code)}  ${w.message}`);
     if (w.hint) {
-      lines.push(`         ${w.hint}`);
+      lines.push(`      hint: ${w.hint}`);
     }
   }
   return lines.join('\n') + '\n';

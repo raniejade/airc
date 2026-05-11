@@ -380,13 +380,17 @@ export async function loadSharedPackConfig(root: string): Promise<void> {
   if (parsed.packs !== undefined) throw new Error(`shared pack config cannot contain [[packs]]: ${configPath}`);
 }
 
+export function resolvePackOverridePath(overridePath: string, projectRoot: string): string {
+  const projectCwd = path.dirname(projectRoot);
+  return path.isAbsolute(overridePath) ? overridePath : path.resolve(projectCwd, overridePath);
+}
+
 export async function ensureLocalPack(
   spec: PackSpec,
   overridePath: string,
   projectRoot: string,
 ): Promise<PackRuntime> {
-  const projectCwd = path.dirname(projectRoot);
-  const resolved = path.isAbsolute(overridePath) ? overridePath : path.resolve(projectCwd, overridePath);
+  const resolved = resolvePackOverridePath(overridePath, projectRoot);
 
   let dirStat: Awaited<ReturnType<typeof stat>>;
   try {
