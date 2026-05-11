@@ -56,13 +56,15 @@ export function validatePackSpec(spec: PackSpec): void {
   if (!REF_RE.test(spec.ref)) throw new Error(`invalid pack ref: ${spec.ref}`);
 }
 
-export type GitRunner = (args: string[], cwd?: string) => Promise<void>;
+export type GitRunner = (args: string[], cwd?: string) => Promise<{ stdout: string }>;
 
 export function defaultGitRunner(): GitRunner {
   return async (args, cwd) => {
-    await new Promise<void>((resolve, reject) => {
+    return new Promise<{ stdout: string }>((resolve, reject) => {
       const child = spawn('git', args, { cwd, stdio: ['ignore', 'pipe', 'pipe'] });
+      let stdout = '';
       let stderr = '';
+      child.stdout?.on('data', (c) => { stdout += String(c); });
       child.stderr.on('data', (c) => { stderr += String(c); });
       child.on('error', (error) => {
         const asNodeErr = error as NodeJS.ErrnoException;
@@ -74,7 +76,7 @@ export function defaultGitRunner(): GitRunner {
       });
       child.on('close', (code) => {
         if (code === 0) {
-          resolve();
+          resolve({ stdout });
           return;
         }
         reject(new Error(`git ${args.join(' ')} failed${stderr ? `: ${stderr.trim()}` : ''}`));
@@ -85,7 +87,7 @@ export function defaultGitRunner(): GitRunner {
 
 export async function ensureSharedPack(
   spec: PackSpec,
-  opts: { refresh?: boolean; gitRunner?: GitRunner } = {},
+  opts: { refresh?: boolean; gitRunner?: GitRunner; lockedSha?: string } = {},
 ): Promise<PackRuntime> {
   const runGit = opts.gitRunner ?? defaultGitRunner();
   validatePackSpec(spec);
@@ -103,12 +105,21 @@ export async function ensureSharedPack(
     await runGit(['clone', gitUrl, repoDir]);
   }
 
-  await runGit(['fetch', '--force', '--tags', 'origin', spec.ref], repoDir);
-  await runGit(['checkout', '--detach', 'FETCH_HEAD'], repoDir);
+  let resolvedSha: string;
+  if (opts.lockedSha) {
+    await runGit(['fetch', '--force', '--tags', 'origin', opts.lockedSha], repoDir);
+    await runGit(['checkout', '--detach', opts.lockedSha], repoDir);
+    resolvedSha = opts.lockedSha;
+  } else {
+    await runGit(['fetch', '--force', '--tags', 'origin', spec.ref], repoDir);
+    await runGit(['checkout', '--detach', 'FETCH_HEAD'], repoDir);
+    const result = await runGit(['rev-parse', 'HEAD'], repoDir);
+    resolvedSha = result.stdout.trim();
+  }
 
   const root = path.join(repoDir, '.rac');
   await loadSharedPackConfig(root);
-  return { id: spec.id, root, sourceRepo: spec.repo, sourceRef: spec.ref };
+  return { id: spec.id, root, sourceRepo: spec.repo, sourceRef: spec.ref, resolvedSha };
 }
 
 function mapId<T extends { id: string }>(items: T[], kind: string): void {

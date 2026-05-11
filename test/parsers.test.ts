@@ -501,6 +501,7 @@ describe('resolvePacks with overrides', () => {
       const gitRunner: GitRunner = vi.fn().mockImplementation(async (args: string[]) => {
         gitCalls.push(args);
         // fetch and checkout succeed silently
+        return { stdout: '' };
       });
 
       const result = await resolvePacks(project, { gitRunner });
@@ -543,7 +544,7 @@ describe('resolvePacks with overrides', () => {
       await mkdir(path.join(repoDir, '.rac'), { recursive: true });
       await writeFile(path.join(repoDir, '.rac/config.toml'), '', 'utf8');
 
-      const gitRunner: GitRunner = vi.fn().mockImplementation(async () => { /* success */ });
+      const gitRunner: GitRunner = vi.fn().mockImplementation(async () => ({ stdout: '' }));
 
       const result = await resolvePacks(project, { gitRunner });
 
